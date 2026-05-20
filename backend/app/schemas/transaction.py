@@ -93,6 +93,7 @@ class TransactionRead(TransactionBase):
     # is_self member at request time. Helps the UI show who paid
     # instead of a generic "shared" badge.
     parent_owner_name: Optional[str] = None
+    is_ignored: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -138,6 +139,22 @@ class CreateCounterpartRequest(BaseModel):
 class BulkTagsRequest(BaseModel):
     transaction_ids: list[uuid.UUID]
     tags: list[str]
+
+
+class BulkDeleteRequest(BaseModel):
+    transaction_ids: list[uuid.UUID]
+
+
+class BulkIgnoreRequest(BaseModel):
+    transaction_ids: list[uuid.UUID]
+    ignore: bool = True
+
+
+class BulkUpdateRequest(BaseModel):
+    transaction_ids: list[uuid.UUID]
+    description: Optional[str] = None
+    type: Optional[str] = None
+    account_id: Optional[uuid.UUID] = None
 
 
 class TransferRead(BaseModel):

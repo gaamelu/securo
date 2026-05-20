@@ -59,6 +59,7 @@ async def get_transactions(
     to_date: Optional[date] = None,
     page: int = 1,
     limit: int = 50,
+    ignored_filter: str = "hide",  # "hide" | "include" | "only"
     include_opening_balance: bool = False,
     search: Optional[str] = None,
     uncategorized: bool = False,
@@ -175,6 +176,13 @@ async def get_transactions(
     # Exclude opening_balance transactions from the normal list unless explicitly requested
     if not include_opening_balance:
         base_query = base_query.where(Transaction.source != "opening_balance")
+
+    # Filter by ignored state: "hide" excludes, "only" restricts, "include" shows all
+    if ignored_filter == "only":
+        base_query = base_query.where(Transaction.is_ignored == True)  # noqa: E712
+    elif ignored_filter == "hide":
+        base_query = base_query.where(Transaction.is_ignored == False)  # noqa: E712
+    # "include" → no filter applied
 
     # Apply filters
     # Multi-id filters take precedence over single-id filters.
@@ -1369,3 +1377,77 @@ async def delete_transaction(
     await session.delete(transaction)
     await session.commit()
     return True
+
+
+async def toggle_ignore_transaction(
+    session: AsyncSession, transaction_id: uuid.UUID, user_id: uuid.UUID
+) -> Optional[Transaction]:
+    transaction = await get_transaction(session, transaction_id, user_id)
+    if not transaction:
+        return None
+    transaction.is_ignored = not transaction.is_ignored
+    await session.commit()
+    await session.refresh(transaction)
+    return transaction
+
+
+async def bulk_ignore(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    transaction_ids: list[uuid.UUID],
+    ignore: bool = True,
+) -> int:
+    result = await session.execute(
+        update(Transaction)
+        .where(
+            Transaction.id.in_(transaction_ids),
+            Transaction.user_id == user_id,
+        )
+        .values(is_ignored=ignore)
+    )
+    await session.commit()
+    return result.rowcount
+
+
+async def bulk_delete(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    transaction_ids: list[uuid.UUID],
+) -> int:
+    result = await session.execute(
+        delete(Transaction).where(
+            Transaction.id.in_(transaction_ids),
+            Transaction.user_id == user_id,
+        )
+    )
+    await session.commit()
+    return result.rowcount
+
+
+async def bulk_update(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    transaction_ids: list[uuid.UUID],
+    description: Optional[str] = None,
+    txn_type: Optional[str] = None,
+    account_id: Optional[uuid.UUID] = None,
+) -> int:
+    values: dict = {}
+    if description is not None:
+        values["description"] = description
+    if txn_type is not None:
+        values["type"] = txn_type
+    if account_id is not None:
+        values["account_id"] = account_id
+    if not values:
+        return 0
+    result = await session.execute(
+        update(Transaction)
+        .where(
+            Transaction.id.in_(transaction_ids),
+            Transaction.user_id == user_id,
+        )
+        .values(**values)
+    )
+    await session.commit()
+    return result.rowcount

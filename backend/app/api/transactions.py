@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import current_active_user
 from app.core.database import get_async_session
 from app.models.user import User
-from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, CreateCounterpartRequest, LinkTransferRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
+from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkDeleteRequest, BulkIgnoreRequest, BulkTagsRequest, BulkUpdateRequest, CreateCounterpartRequest, LinkTransferRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
 from app.services import transaction_service
 from app.services.admin_service import get_credit_card_accounting_mode
 
@@ -76,6 +76,7 @@ async def list_transactions(
     limit: int = Query(50, ge=1, le=500),
     include_opening_balance: bool = Query(False),
     exclude_transfers: bool = Query(False),
+    ignored_filter: str = Query("hide"),  # hide | include | only
     tags: Optional[List[str]] = Query(None),
     sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status). Default: date desc."),
     sort_dir: str = Query("desc", regex="^(asc|desc)$"),
@@ -89,7 +90,7 @@ async def list_transactions(
         category_ids=_merge_id_filters(category_id, category_ids),
         payee_id=payee_id, from_date=from_date, to_date=to_date, page=page, limit=limit,
         include_opening_balance=include_opening_balance, search=q, uncategorized=uncategorized,
-        txn_type=type, exclude_transfers=exclude_transfers,
+        txn_type=type, exclude_transfers=exclude_transfers, ignored_filter=ignored_filter,
         accounting_mode=accounting_mode,
         tags=tags,
         bill_id=bill_id,
@@ -233,6 +234,43 @@ async def bulk_add_to_group(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+@router.patch("/bulk-ignore")
+async def bulk_ignore(
+    data: BulkIgnoreRequest,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    count = await transaction_service.bulk_ignore(
+        session, user.id, data.transaction_ids, data.ignore
+    )
+    return {"updated": count}
+
+
+@router.delete("/bulk-delete")
+async def bulk_delete(
+    data: BulkDeleteRequest,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    count = await transaction_service.bulk_delete(session, user.id, data.transaction_ids)
+    return {"deleted": count}
+
+
+@router.patch("/bulk-update")
+async def bulk_update(
+    data: BulkUpdateRequest,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    count = await transaction_service.bulk_update(
+        session, user.id, data.transaction_ids,
+        description=data.description,
+        txn_type=data.type,
+        account_id=data.account_id,
+    )
+    return {"updated": count}
+
+
 @router.post("/transfer", response_model=TransferRead, status_code=status.HTTP_201_CREATED)
 async def create_transfer(
     data: TransferCreate,
@@ -362,6 +400,19 @@ async def update_transaction(
         transaction = await transaction_service.update_transaction(session, transaction_id, user.id, data)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    if not transaction:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    primary_currency = user.primary_currency
+    return _tag_fx_fallback(TransactionRead.model_validate(transaction, from_attributes=True), primary_currency)
+
+
+@router.patch("/{transaction_id}/ignore", response_model=TransactionRead)
+async def toggle_ignore_transaction(
+    transaction_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    transaction = await transaction_service.toggle_ignore_transaction(session, transaction_id, user.id)
     if not transaction:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
     primary_currency = user.primary_currency

@@ -1,20 +1,29 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
-import { useRegisterPageChatContext } from '@/lib/page-chat-context'
-import { getAccountName } from '@/lib/account-utils'
-import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { transactions, categories as categoriesApi, categoryGroups as categoryGroupsApi, accounts as accountsApi, recurring, payees as payeesApi, admin, groups as groupsApi } from '@/lib/api'
-import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
-import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
+import { useState, useMemo, useEffect, useRef } from "react";
+import { useRegisterPageChatContext } from "@/lib/page-chat-context";
+import { getAccountName } from "@/lib/account-utils";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  transactions,
+  categories as categoriesApi,
+  categoryGroups as categoryGroupsApi,
+  accounts as accountsApi,
+  recurring,
+  payees as payeesApi,
+  admin,
+  groups as groupsApi,
+} from "@/lib/api";
+import { invalidateFinancialQueries } from "@/lib/invalidate-queries";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -22,161 +31,206 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { Skeleton } from '@/components/ui/skeleton'
-import { AlertTriangle, ArrowLeftRight, ArrowUp, ArrowDown, Check, Copy, Download, HelpCircle, Info, Paperclip, Users, X } from 'lucide-react'
-import type { Transaction } from '@/types'
-import { PageHeader } from '@/components/page-header'
-import { CategoryIcon } from '@/components/category-icon'
-import { CategorySelect } from '@/components/category-select'
-import { TransactionDialog, extractApiError, type SaveAction } from '@/components/transaction-dialog'
-import { TransactionsColumnPicker } from '@/components/transactions-column-picker'
-import { type ColumnDef, type ColumnId, useTransactionsGridState } from '@/components/transactions-grid-columns'
-import { TransferDialog } from '@/components/transfer-dialog'
-import { LinkTransferDialog } from '@/components/link-transfer-dialog'
-import { BulkAddToGroupDialog, type BulkAddToGroupSubmission } from '@/components/bulk-add-to-group-dialog'
-import { TransactionsFilterBar } from '@/components/transactions-filter-bar'
-import { usePrivacyMode } from '@/hooks/use-privacy-mode'
-import { useAuth } from '@/contexts/auth-context'
+} from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertTriangle,
+  ArrowLeftRight,
+  ArrowUp,
+  ArrowDown,
+  Check,
+  Copy,
+  Download,
+  Eye,
+  EyeOff,
+  HelpCircle,
+  Info,
+  Paperclip,
+  Users,
+  X,
+} from "lucide-react";
+import type { Transaction } from "@/types";
+import { PageHeader } from "@/components/page-header";
+import { CategoryIcon } from "@/components/category-icon";
+import { CategorySelect } from "@/components/category-select";
+import {
+  TransactionDialog,
+  extractApiError,
+  type SaveAction,
+} from "@/components/transaction-dialog";
+import { TransactionsColumnPicker } from "@/components/transactions-column-picker";
+import {
+  type ColumnDef,
+  type ColumnId,
+  useTransactionsGridState,
+} from "@/components/transactions-grid-columns";
+import { TransferDialog } from "@/components/transfer-dialog";
+import { LinkTransferDialog } from "@/components/link-transfer-dialog";
+import {
+  BulkAddToGroupDialog,
+  type BulkAddToGroupSubmission,
+} from "@/components/bulk-add-to-group-dialog";
+import { TransactionsFilterBar } from "@/components/transactions-filter-bar";
+import { usePrivacyMode } from "@/hooks/use-privacy-mode";
+import { useAuth } from "@/contexts/auth-context";
 
 type TransactionUpdatePayload = Partial<Transaction> & {
-  apply_to_transfer_pair?: boolean
-}
+  apply_to_transfer_pair?: boolean;
+};
 
 type PendingTransferCategoryUpdate = {
-  id: string
-  data: TransactionUpdatePayload
-}
+  id: string;
+  data: TransactionUpdatePayload;
+};
 
-function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
-  return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value)
+function formatCurrency(value: number, currency = "USD", locale = "en-US") {
+  return new Intl.NumberFormat(locale, { style: "currency", currency }).format(
+    value,
+  );
 }
 
 function parseHashtags(notes: string | null): string[] {
-  if (!notes) return []
-  const matches = notes.match(/#[\w\u00C0-\u017E-]+/g)
-  return matches ?? []
+  if (!notes) return [];
+  const matches = notes.match(/#[\w\u00C0-\u017E-]+/g);
+  return matches ?? [];
 }
 
 export default function TransactionsPage() {
-  const { t, i18n } = useTranslation()
-  const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
-  const locale = i18n.language === 'en' ? 'en-US' : i18n.language
-  const { mask } = usePrivacyMode()
-  const { user } = useAuth()
-  const userCurrency = user?.preferences?.currency_display ?? 'USD'
-  const queryClient = useQueryClient()
-  const [page, setPage] = useState(1)
-  const [filterAccountIds, setFilterAccountIds] = useState<string[]>([])
+  const { t, i18n } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const locale = i18n.language === "en" ? "en-US" : i18n.language;
+  const { mask } = usePrivacyMode();
+  const { user } = useAuth();
+  const userCurrency = user?.preferences?.currency_display ?? "USD";
+  const queryClient = useQueryClient();
+  const [page, setPage] = useState(1);
+  const [filterAccountIds, setFilterAccountIds] = useState<string[]>([]);
   const [filterCategoryIds, setFilterCategoryIds] = useState<string[]>(() => {
-    const initial = searchParams.get('category_id')
-    return initial ? [initial] : []
-  })
-  const [filterUncategorized, setFilterUncategorized] = useState<boolean>(false)
-  const [filterFrom, setFilterFrom] = useState<string>('')
-  const [filterTo, setFilterTo] = useState<string>('')
-  const [searchInput, setSearchInput] = useState(() => searchParams.get('q') ?? '')
-  const [searchQuery, setSearchQuery] = useState(() => searchParams.get('q') ?? '')
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingTx, setEditingTx] = useState<Transaction | null>(null)
+    const initial = searchParams.get("category_id");
+    return initial ? [initial] : [];
+  });
+  const [filterUncategorized, setFilterUncategorized] =
+    useState<boolean>(false);
+  const [filterFrom, setFilterFrom] = useState<string>("");
+  const [filterTo, setFilterTo] = useState<string>("");
+  const [searchInput, setSearchInput] = useState(
+    () => searchParams.get("q") ?? "",
+  );
+  const [searchQuery, setSearchQuery] = useState(
+    () => searchParams.get("q") ?? "",
+  );
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
   const [pendingTransferCategoryUpdate, setPendingTransferCategoryUpdate] =
-    useState<PendingTransferCategoryUpdate | null>(null)
-  const [formResetKey, setFormResetKey] = useState(0)
-  const [duplicateDraft, setDuplicateDraft] = useState<Partial<Transaction> | null>(null)
-  const [filterPayee, setFilterPayee] = useState<string>(searchParams.get('payee_id') ?? '')
-  const [filterGroupId, setFilterGroupId] = useState<string>(searchParams.get('group_id') ?? '')
-  const [filterType, setFilterType] = useState<string>(searchParams.get('type') ?? '')
-  const [tagFilters, setTagFilters] = useState<string[]>([])
+    useState<PendingTransferCategoryUpdate | null>(null);
+  const [formResetKey, setFormResetKey] = useState(0);
+  const [duplicateDraft, setDuplicateDraft] =
+    useState<Partial<Transaction> | null>(null);
+  const [filterPayee, setFilterPayee] = useState<string>(
+    searchParams.get("payee_id") ?? "",
+  );
+  const [filterGroupId, setFilterGroupId] = useState<string>(
+    searchParams.get("group_id") ?? "",
+  );
+  const [filterType, setFilterType] = useState<string>(
+    searchParams.get("type") ?? "",
+  );
+  const [tagFilters, setTagFilters] = useState<string[]>([]);
+  const [ignoredFilter, setIgnoredFilter] = useState<
+    "hide" | "include" | "only"
+  >("include");
 
   // When the page is opened with a `group_id`, fetch its name so the
   // active-filter chip is recognizable rather than a raw uuid.
   const { data: filterGroup } = useQuery({
-    queryKey: ['groups', filterGroupId],
+    queryKey: ["groups", filterGroupId],
     queryFn: () => groupsApi.get(filterGroupId),
     enabled: !!filterGroupId,
-  })
+  });
 
   // Used to resolve the group name on shared transaction rows.
   const { data: allGroups } = useQuery({
-    queryKey: ['groups', 'all'],
+    queryKey: ["groups", "all"],
     queryFn: () => groupsApi.list(true),
     staleTime: 60_000,
-  })
+  });
   const groupNameById = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const g of allGroups ?? []) map.set(g.id, g.name)
-    return map
-  }, [allGroups])
+    const map = new Map<string, string>();
+    for (const g of allGroups ?? []) map.set(g.id, g.name);
+    return map;
+  }, [allGroups]);
 
   const addTagFilter = (tag: string) => {
-    const normalized = tag.startsWith('#') ? tag : `#${tag}`
-    setTagFilters(prev => (prev.includes(normalized) ? prev : [...prev, normalized]))
-    setPage(1)
-  }
+    const normalized = tag.startsWith("#") ? tag : `#${tag}`;
+    setTagFilters((prev) =>
+      prev.includes(normalized) ? prev : [...prev, normalized],
+    );
+    setPage(1);
+  };
   const removeTagFilter = (tag: string) => {
-    setTagFilters(prev => prev.filter(t => t !== tag))
-    setPage(1)
-  }
+    setTagFilters((prev) => prev.filter((t) => t !== tag));
+    setPage(1);
+  };
   const clearTagFilters = () => {
-    setTagFilters([])
-    setPage(1)
-  }
-  const [exporting, setExporting] = useState(false)
-  const [transferDialogOpen, setTransferDialogOpen] = useState(false)
-  const [linkTransferDialogOpen, setLinkTransferDialogOpen] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const grid = useTransactionsGridState()
-  const [bulkCategory, setBulkCategory] = useState<string>('')
-  const [bulkAddToGroupOpen, setBulkAddToGroupOpen] = useState(false)
-  const [bulkTagInput, setBulkTagInput] = useState<string>('')
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null)
-  const highlightId = searchParams.get('highlight')
-  const highlightedRowRef = useRef<HTMLTableRowElement | null>(null)
+    setTagFilters([]);
+    setPage(1);
+  };
+  const [exporting, setExporting] = useState(false);
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false);
+  const [linkTransferDialogOpen, setLinkTransferDialogOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const grid = useTransactionsGridState();
+  const [bulkCategory, setBulkCategory] = useState<string>("");
+  const [bulkAddToGroupOpen, setBulkAddToGroupOpen] = useState(false);
+  const [bulkTagInput, setBulkTagInput] = useState<string>("");
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const highlightId = searchParams.get("highlight");
+  const highlightedRowRef = useRef<HTMLTableRowElement | null>(null);
 
   // Sync state from URL when navigating (e.g. from the command palette) while
   // the page is already mounted. Typing in the search box does not touch the
   // URL, so this effect only fires on genuine navigation events.
   useEffect(() => {
-    const nextQ = searchParams.get('q') ?? ''
-    setSearchInput(nextQ)
-    setSearchQuery(nextQ)
-    const tags = searchParams.get('tags');
-    setTagFilters(tags ? tags.split(',') : []);
-    setFilterPayee(searchParams.get('payee_id') ?? '')
-    setFilterGroupId(searchParams.get('group_id') ?? '')
-    setFilterType(searchParams.get('type') ?? '')
-    const categories = searchParams.get('category_id');
-    setFilterCategoryIds(categories ? categories.split(',') : []);
-    setFilterUncategorized(searchParams.get('uncategorized') === '1');
-    const accounts = searchParams.get('account_id');
-    setFilterAccountIds(accounts ? accounts.split(',') : []);
-    setFilterFrom(searchParams.get('from') ?? '');
-    setFilterTo(searchParams.get('to') ?? '');
-    setPage(1)
-  }, [searchParams])
+    const nextQ = searchParams.get("q") ?? "";
+    setSearchInput(nextQ);
+    setSearchQuery(nextQ);
+    const tags = searchParams.get("tags");
+    setTagFilters(tags ? tags.split(",") : []);
+    setFilterPayee(searchParams.get("payee_id") ?? "");
+    setFilterGroupId(searchParams.get("group_id") ?? "");
+    setFilterType(searchParams.get("type") ?? "");
+    const categories = searchParams.get("category_id");
+    setFilterCategoryIds(categories ? categories.split(",") : []);
+    setFilterUncategorized(searchParams.get("uncategorized") === "1");
+    const accounts = searchParams.get("account_id");
+    setFilterAccountIds(accounts ? accounts.split(",") : []);
+    setFilterFrom(searchParams.get("from") ?? "");
+    setFilterTo(searchParams.get("to") ?? "");
+    setPage(1);
+  }, [searchParams]);
 
   // Keep the URL in sync with the current filters, so that the current page can be
   // refreshed, bookmarked or shared.
   useEffect(() => {
     const params = new URLSearchParams(
       [
-        ['q', searchQuery],
-        ['tags', tagFilters.join(',')],
-        ['payee_id', filterPayee],
-        ['group_id', filterGroupId],
-        ['type', filterType],
-        ['category_id', filterCategoryIds.join(',')],
-        ['uncategorized', filterUncategorized ? '1' : ''],
-        ['account_id', filterAccountIds.join(',')],
-        ['from', filterFrom],
-        ['to', filterTo],
+        ["q", searchQuery],
+        ["tags", tagFilters.join(",")],
+        ["payee_id", filterPayee],
+        ["group_id", filterGroupId],
+        ["type", filterType],
+        ["category_id", filterCategoryIds.join(",")],
+        ["uncategorized", filterUncategorized ? "1" : ""],
+        ["account_id", filterAccountIds.join(",")],
+        ["from", filterFrom],
+        ["to", filterTo],
       ].filter(([, v]) => v.length),
     );
 
     window.history.replaceState(
       null,
-      '',
+      "",
       params.size ? `?${params}` : window.location.pathname,
     );
   }, [
@@ -193,54 +247,83 @@ export default function TransactionsPage() {
   ]);
 
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      setSearchQuery(searchInput)
-      setPage(1)
-    }, 300)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [searchInput])
+      setSearchQuery(searchInput);
+      setPage(1);
+    }, 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [searchInput]);
 
   // Clear selection on page/filter change
   useEffect(() => {
-    setSelectedIds(new Set())
-    setBulkCategory('')
-  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterFrom, filterTo, searchQuery])
+    setSelectedIds(new Set());
+    setBulkCategory("");
+  }, [
+    page,
+    filterAccountIds,
+    filterCategoryIds,
+    filterUncategorized,
+    filterPayee,
+    filterType,
+    filterFrom,
+    filterTo,
+    searchQuery,
+  ]);
 
   // Reset bulk category when selection changes so the same category can be re-applied
   useEffect(() => {
-    setBulkCategory('')
-  }, [selectedIds])
+    setBulkCategory("");
+  }, [selectedIds]);
 
   // Scroll to and flash a highlighted row after navigation (e.g. opened via
   // the command palette). Re-runs whenever highlightId or the current data
   // set changes so that when results finish loading we animate the row.
   useEffect(() => {
-    if (!highlightId) return
-    const el = highlightedRowRef.current
-    if (!el) return
+    if (!highlightId) return;
+    const el = highlightedRowRef.current;
+    if (!el) return;
     const raf = requestAnimationFrame(() => {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el.classList.add('securo-highlight-flash')
-    })
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("securo-highlight-flash");
+    });
     const timer = setTimeout(() => {
-      el.classList.remove('securo-highlight-flash')
-    }, 2500)
+      el.classList.remove("securo-highlight-flash");
+    }, 2500);
     return () => {
-      cancelAnimationFrame(raf)
-      clearTimeout(timer)
-      el.classList.remove('securo-highlight-flash')
-    }
-  }, [highlightId, searchQuery, filterPayee, filterCategoryIds, page])
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+      el.classList.remove("securo-highlight-flash");
+    };
+  }, [highlightId, searchQuery, filterPayee, filterCategoryIds, page]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['transactions', page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterFrom, filterTo, searchQuery, tagFilters, grid.sortBy, grid.sortDir],
+    queryKey: [
+      "transactions",
+      page,
+      filterAccountIds,
+      filterCategoryIds,
+      filterUncategorized,
+      filterPayee,
+      filterGroupId,
+      filterType,
+      filterFrom,
+      filterTo,
+      searchQuery,
+      tagFilters,
+      grid.sortBy,
+      grid.sortDir,
+      ignoredFilter,
+    ],
     queryFn: () =>
       transactions.list({
         page,
         limit: 20,
         account_ids: filterAccountIds.length > 0 ? filterAccountIds : undefined,
-        category_ids: filterCategoryIds.length > 0 ? filterCategoryIds : undefined,
+        category_ids:
+          filterCategoryIds.length > 0 ? filterCategoryIds : undefined,
         payee_id: filterPayee || undefined,
         group_id: filterGroupId || undefined,
         type: filterType || undefined,
@@ -249,9 +332,10 @@ export default function TransactionsPage() {
         to: filterTo || undefined,
         q: searchQuery || undefined,
         tags: tagFilters.length > 0 ? tagFilters : undefined,
+        ignored_filter: ignoredFilter,
         ...grid.apiSort,
       }),
-  })
+  });
 
   // Publish the active filters + result count to the global chat panel.
   // The agent uses this so "what about THIS list?" / "soma essas" /
@@ -271,57 +355,91 @@ export default function TransactionsPage() {
     sort_by: grid.sortBy,
     sort_dir: grid.sortDir,
     page,
-  }
-  const ctxKey = JSON.stringify(ctxFilters) + ':' + (data?.total ?? '')
+  };
+  const ctxKey = JSON.stringify(ctxFilters) + ":" + (data?.total ?? "");
   useRegisterPageChatContext(
     {
-      path: '/transactions',
-      label: 'Transactions',
-      summary: data?.total != null
-        ? `${data.total} transaction(s) match the active filters (showing page ${page}, 20 per page).`
-        : 'Transactions list with active filters.',
+      path: "/transactions",
+      label: "Transactions",
+      summary:
+        data?.total != null
+          ? `${data.total} transaction(s) match the active filters (showing page ${page}, 20 per page).`
+          : "Transactions list with active filters.",
       filters: ctxFilters,
     },
     ctxKey,
-  )
+  );
 
   const { data: categoriesList } = useQuery({
-    queryKey: ['categories'],
+    queryKey: ["categories"],
     queryFn: categoriesApi.list,
-  })
+  });
 
   const { data: categoryGroupsList } = useQuery({
-    queryKey: ['categoryGroups'],
+    queryKey: ["categoryGroups"],
     queryFn: categoryGroupsApi.list,
-  })
+  });
 
   const { data: accountsList } = useQuery({
-    queryKey: ['accounts'],
+    queryKey: ["accounts"],
     queryFn: () => accountsApi.list(),
-  })
+  });
 
   const { data: payeesList } = useQuery({
-    queryKey: ['payees'],
+    queryKey: ["payees"],
     queryFn: payeesApi.list,
-  })
+  });
 
   const { data: recurringList } = useQuery({
-    queryKey: ['recurring'],
+    queryKey: ["recurring"],
     queryFn: recurring.list,
-  })
+  });
 
   const { data: accountingModeData } = useQuery({
-    queryKey: ['admin', 'accounting-mode'],
+    queryKey: ["admin", "accounting-mode"],
     queryFn: () => admin.accountingMode(),
     staleTime: 5 * 60 * 1000,
-  })
-  const isAccrual = accountingModeData?.mode === 'accrual'
+  });
+  const isAccrual = accountingModeData?.mode === "accrual";
 
-  const invalidateAfterTxMutation = () => invalidateFinancialQueries(queryClient)
+  const invalidateAfterTxMutation = () =>
+    invalidateFinancialQueries(queryClient);
+
+  const ignoreMutation = useMutation({
+    mutationFn: (id: string) => transactions.ignore(id),
+    onSuccess: () => {
+      invalidateAfterTxMutation();
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error));
+    },
+  });
+
+  const bulkIgnoreMutation = useMutation({
+    mutationFn: ({ ids, ignore }: { ids: string[]; ignore: boolean }) =>
+      transactions.bulkIgnore(ids, ignore),
+    onSuccess: (result, { ignore }) => {
+      invalidateAfterTxMutation();
+      setSelectedIds(new Set());
+      toast.success(
+        ignore
+          ? `${result.updated} transactions ignored`
+          : `${result.updated} transactions restored`,
+      );
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error));
+    },
+  });
 
   const createMutation = useMutation({
-    mutationFn: async (payload: { tx: Partial<Transaction>; recurringData?: { frequency: string; end_date?: string }; pendingFiles?: File[]; action?: SaveAction }) => {
-      const created = await transactions.create(payload.tx)
+    mutationFn: async (payload: {
+      tx: Partial<Transaction>;
+      recurringData?: { frequency: string; end_date?: string };
+      pendingFiles?: File[];
+      action?: SaveAction;
+    }) => {
+      const created = await transactions.create(payload.tx);
       if (payload.recurringData) {
         await recurring.create({
           description: payload.tx.description,
@@ -334,258 +452,288 @@ export default function TransactionsPage() {
           category_id: payload.tx.category_id || undefined,
           account_id: payload.tx.account_id || undefined,
           skip_first: true,
-        } as Record<string, unknown>)
+        } as Record<string, unknown>);
       }
       if (payload.pendingFiles?.length) {
         await Promise.all(
-          payload.pendingFiles.map(file => transactions.attachments.upload(created.id, file))
-        )
+          payload.pendingFiles.map((file) =>
+            transactions.attachments.upload(created.id, file),
+          ),
+        );
       }
-      return created
+      return created;
     },
     onSuccess: (_created, variables) => {
-      invalidateAfterTxMutation()
-      queryClient.invalidateQueries({ queryKey: ['recurring'] })
-      toast.success(t('transactions.created'))
-      if (variables.action === 'saveAndNew') {
-        setDuplicateDraft(null)
-        setFormResetKey(k => k + 1)
-      } else if (variables.action === 'saveAndDuplicate') {
-        setDuplicateDraft(variables.tx)
-        setFormResetKey(k => k + 1)
+      invalidateAfterTxMutation();
+      queryClient.invalidateQueries({ queryKey: ["recurring"] });
+      toast.success(t("transactions.created"));
+      if (variables.action === "saveAndNew") {
+        setDuplicateDraft(null);
+        setFormResetKey((k) => k + 1);
+      } else if (variables.action === "saveAndDuplicate") {
+        setDuplicateDraft(variables.tx);
+        setFormResetKey((k) => k + 1);
       } else {
-        setDialogOpen(false)
+        setDialogOpen(false);
       }
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, ...data }: TransactionUpdatePayload & { id: string }) =>
       transactions.update(id, data),
     onSuccess: () => {
-      invalidateAfterTxMutation()
-      setDialogOpen(false)
-      setEditingTx(null)
-      toast.success(t('transactions.updated'))
+      invalidateAfterTxMutation();
+      setDialogOpen(false);
+      setEditingTx(null);
+      toast.success(t("transactions.updated"));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => transactions.delete(id),
     onSuccess: () => {
-      invalidateAfterTxMutation()
-      setDialogOpen(false)
-      setEditingTx(null)
-      toast.success(t('transactions.deleted'))
+      invalidateAfterTxMutation();
+      setDialogOpen(false);
+      setEditingTx(null);
+      toast.success(t("transactions.deleted"));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const bulkCategorizeMutation = useMutation({
-    mutationFn: ({ ids, categoryId }: { ids: string[]; categoryId: string | null }) =>
-      transactions.bulkCategorize(ids, categoryId),
+    mutationFn: ({
+      ids,
+      categoryId,
+    }: {
+      ids: string[];
+      categoryId: string | null;
+    }) => transactions.bulkCategorize(ids, categoryId),
     onSuccess: (result) => {
-      invalidateAfterTxMutation()
-      setSelectedIds(new Set())
-      setBulkCategory('')
-      toast.success(t('transactions.bulkSuccess', { count: result.updated }))
+      invalidateAfterTxMutation();
+      setSelectedIds(new Set());
+      setBulkCategory("");
+      toast.success(t("transactions.bulkSuccess", { count: result.updated }));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const bulkAddTagsMutation = useMutation({
     mutationFn: ({ ids, tags }: { ids: string[]; tags: string[] }) =>
       transactions.bulkAddTags(ids, tags),
     onSuccess: (result) => {
-      invalidateAfterTxMutation()
-      setSelectedIds(new Set())
-      setBulkTagInput('')
-      toast.success(t('transactions.bulkSuccess', { count: result.updated }))
+      invalidateAfterTxMutation();
+      setSelectedIds(new Set());
+      setBulkTagInput("");
+      toast.success(t("transactions.bulkSuccess", { count: result.updated }));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const bulkAddToGroupMutation = useMutation({
-    mutationFn: ({ ids, payload }: { ids: string[]; payload: BulkAddToGroupSubmission }) =>
+    mutationFn: ({
+      ids,
+      payload,
+    }: {
+      ids: string[];
+      payload: BulkAddToGroupSubmission;
+    }) =>
       transactions.bulkAddToGroup(ids, payload.groupId, {
         share_type: payload.share_type,
         member_splits: payload.member_splits,
       }),
     onSuccess: (result) => {
-      invalidateAfterTxMutation()
-      setSelectedIds(new Set())
-      setBulkAddToGroupOpen(false)
+      invalidateAfterTxMutation();
+      setSelectedIds(new Set());
+      setBulkAddToGroupOpen(false);
       if (result.skipped > 0) {
-        toast.success(t('transactions.bulkAddToGroupPartial', { added: result.updated, skipped: result.skipped }))
+        toast.success(
+          t("transactions.bulkAddToGroupPartial", {
+            added: result.updated,
+            skipped: result.skipped,
+          }),
+        );
       } else {
-        toast.success(t('transactions.bulkAddToGroupSuccess', { count: result.updated }))
+        toast.success(
+          t("transactions.bulkAddToGroupSuccess", { count: result.updated }),
+        );
       }
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const linkTransferMutation = useMutation({
     mutationFn: (ids: [string, string]) => transactions.linkTransfer(ids),
     onSuccess: () => {
-      invalidateAfterTxMutation()
-      queryClient.invalidateQueries({ queryKey: ['transfer-candidates'] })
-      setLinkTransferDialogOpen(false)
-      setSelectedIds(new Set())
-      toast.success(t('transactions.linkTransferSuccess'))
+      invalidateAfterTxMutation();
+      queryClient.invalidateQueries({ queryKey: ["transfer-candidates"] });
+      setLinkTransferDialogOpen(false);
+      setSelectedIds(new Set());
+      toast.success(t("transactions.linkTransferSuccess"));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const createCounterpartMutation = useMutation({
-    mutationFn: ({ anchorId, toAccountId }: { anchorId: string; toAccountId: string }) =>
-      transactions.createTransferCounterpart(anchorId, toAccountId),
+    mutationFn: ({
+      anchorId,
+      toAccountId,
+    }: {
+      anchorId: string;
+      toAccountId: string;
+    }) => transactions.createTransferCounterpart(anchorId, toAccountId),
     onSuccess: () => {
-      invalidateAfterTxMutation()
-      queryClient.invalidateQueries({ queryKey: ['transfer-candidates'] })
-      setLinkTransferDialogOpen(false)
-      setSelectedIds(new Set())
-      toast.success(t('transactions.linkTransferSuccess'))
+      invalidateAfterTxMutation();
+      queryClient.invalidateQueries({ queryKey: ["transfer-candidates"] });
+      setLinkTransferDialogOpen(false);
+      setSelectedIds(new Set());
+      toast.success(t("transactions.linkTransferSuccess"));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const unlinkTransferMutation = useMutation({
     mutationFn: (pairId: string) => transactions.unlinkTransfer(pairId),
     onSuccess: () => {
-      invalidateAfterTxMutation()
-      setDialogOpen(false)
-      setEditingTx(null)
-      toast.success(t('transactions.unlinkTransferSuccess'))
+      invalidateAfterTxMutation();
+      setDialogOpen(false);
+      setEditingTx(null);
+      toast.success(t("transactions.unlinkTransferSuccess"));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const transferMutation = useMutation({
     mutationFn: (data: {
-      from_account_id: string
-      to_account_id: string
-      amount: number
-      date: string
-      description: string
-      notes?: string
-      fx_rate?: number
+      from_account_id: string;
+      to_account_id: string;
+      amount: number;
+      date: string;
+      description: string;
+      notes?: string;
+      fx_rate?: number;
     }) => transactions.createTransfer(data),
     onSuccess: () => {
-      invalidateAfterTxMutation()
-      setTransferDialogOpen(false)
-      toast.success(t('transactions.transferCreated'))
+      invalidateAfterTxMutation();
+      setTransferDialogOpen(false);
+      toast.success(t("transactions.transferCreated"));
     },
     onError: (error) => {
-      toast.error(extractApiError(error))
+      toast.error(extractApiError(error));
     },
-  })
+  });
 
   const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Tag filtering is now applied server-side, so the visible list and the
   // page count both reflect the same filtered total — issue #88.
-  const filteredItems = data?.items ?? []
-  const selectableItems = filteredItems.filter(tx => !tx.is_shared)
+  const filteredItems = data?.items ?? [];
+  const selectableItems = filteredItems.filter((tx) => !tx.is_shared);
 
   const toggleSelectAll = () => {
-    if (!selectableItems.length) return
-    const allSelected = selectableItems.every(tx => selectedIds.has(tx.id))
+    if (!selectableItems.length) return;
+    const allSelected = selectableItems.every((tx) => selectedIds.has(tx.id));
     if (allSelected) {
-      setSelectedIds(new Set())
+      setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(selectableItems.map(tx => tx.id)))
+      setSelectedIds(new Set(selectableItems.map((tx) => tx.id)));
     }
-  }
+  };
 
-  const allSelected = selectableItems.length > 0 && selectableItems.every(tx => selectedIds.has(tx.id))
-  const someSelected = selectableItems.some(tx => selectedIds.has(tx.id)) && !allSelected
+  const allSelected =
+    selectableItems.length > 0 &&
+    selectableItems.every((tx) => selectedIds.has(tx.id));
+  const someSelected =
+    selectableItems.some((tx) => selectedIds.has(tx.id)) && !allSelected;
 
   // Net total of the currently-selected rows (issue #185). Selection is
   // always page-scoped (cleared on page/filter change), so summing the
   // visible page covers every selected id. Cross-currency rows use their
   // primary-currency amount; credits add, debits subtract.
   const selectedNet = useMemo(() => {
-    let net = 0
+    let net = 0;
     for (const tx of data?.items ?? []) {
-      if (!selectedIds.has(tx.id)) continue
-      const base = Math.abs(Number(tx.amount_primary ?? tx.amount))
-      net += tx.type === 'credit' ? base : -base
+      if (!selectedIds.has(tx.id)) continue;
+      const base = Math.abs(Number(tx.amount_primary ?? tx.amount));
+      net += tx.type === "credit" ? base : -base;
     }
-    return net
-  }, [data?.items, selectedIds])
+    return net;
+  }, [data?.items, selectedIds]);
 
   // Resolve the currently-selected transactions into a valid debit/credit pair
   // for the "Link as transfer" action. Returns null if the pair is invalid
   // (wrong count, same account, same type, or already linked).
   const linkablePair = useMemo(() => {
-    if (selectedIds.size !== 2) return null
-    const selected = (data?.items ?? []).filter(tx => selectedIds.has(tx.id))
-    if (selected.length !== 2) return null
-    if (selected.some(tx => tx.transfer_pair_id)) return null
-    if (selected[0].account_id === selected[1].account_id) return null
-    const debit = selected.find(tx => tx.type === 'debit')
-    const credit = selected.find(tx => tx.type === 'credit')
-    if (!debit || !credit) return null
-    return { debit, credit }
-  }, [selectedIds, data?.items])
+    if (selectedIds.size !== 2) return null;
+    const selected = (data?.items ?? []).filter((tx) => selectedIds.has(tx.id));
+    if (selected.length !== 2) return null;
+    if (selected.some((tx) => tx.transfer_pair_id)) return null;
+    if (selected[0].account_id === selected[1].account_id) return null;
+    const debit = selected.find((tx) => tx.type === "debit");
+    const credit = selected.find((tx) => tx.type === "credit");
+    if (!debit || !credit) return null;
+    return { debit, credit };
+  }, [selectedIds, data?.items]);
 
   // Single-selection picker mode: when exactly one unlinked transaction is
   // selected, the user can search for its counterpart across all accounts.
   const linkAnchor = useMemo(() => {
-    if (selectedIds.size !== 1) return null
-    const selected = (data?.items ?? []).find(tx => selectedIds.has(tx.id))
-    if (!selected) return null
-    if (selected.transfer_pair_id) return null
-    return selected
-  }, [selectedIds, data?.items])
+    if (selectedIds.size !== 1) return null;
+    const selected = (data?.items ?? []).find((tx) => selectedIds.has(tx.id));
+    if (!selected) return null;
+    if (selected.transfer_pair_id) return null;
+    return selected;
+  }, [selectedIds, data?.items]);
 
-  const canOpenLinkDialog = !!linkablePair || !!linkAnchor
+  const canOpenLinkDialog = !!linkablePair || !!linkAnchor;
   const linkDisabledTooltip =
     !canOpenLinkDialog && selectedIds.size >= 2
-      ? t('transactions.linkTransferInvalidPair')
-      : undefined
+      ? t("transactions.linkTransferInvalidPair")
+      : undefined;
 
-  const totalPages = data ? Math.ceil(data.total / 20) : 0
+  const totalPages = data ? Math.ceil(data.total / 20) : 0;
 
-  const isTransferCategoryPromptOpen = !!pendingTransferCategoryUpdate
+  const isTransferCategoryPromptOpen = !!pendingTransferCategoryUpdate;
 
-  const submitPendingTransferCategoryUpdate = (applyToTransferPair: boolean) => {
-    if (!pendingTransferCategoryUpdate) return
-    const { id, data } = pendingTransferCategoryUpdate
+  const submitPendingTransferCategoryUpdate = (
+    applyToTransferPair: boolean,
+  ) => {
+    if (!pendingTransferCategoryUpdate) return;
+    const { id, data } = pendingTransferCategoryUpdate;
     updateMutation.mutate({
       id,
       ...data,
       apply_to_transfer_pair: applyToTransferPair,
-    })
-    setPendingTransferCategoryUpdate(null)
-  }
+    });
+    setPendingTransferCategoryUpdate(null);
+  };
 
   const handleTransactionSave = (
     data: Partial<Transaction>,
@@ -594,22 +742,22 @@ export default function TransactionsPage() {
     action?: SaveAction,
   ) => {
     if (!editingTx) {
-      createMutation.mutate({ tx: data, recurringData, pendingFiles, action })
-      return
+      createMutation.mutate({ tx: data, recurringData, pendingFiles, action });
+      return;
     }
 
     const isTransferCategoryChange =
       !!editingTx.transfer_pair_id &&
-      Object.prototype.hasOwnProperty.call(data, 'category_id') &&
-      data.category_id !== editingTx.category_id
+      Object.prototype.hasOwnProperty.call(data, "category_id") &&
+      data.category_id !== editingTx.category_id;
 
     if (isTransferCategoryChange) {
-      setPendingTransferCategoryUpdate({ id: editingTx.id, data })
-      return
+      setPendingTransferCategoryUpdate({ id: editingTx.id, data });
+      return;
     }
 
-    updateMutation.mutate({ id: editingTx.id, ...data })
-  }
+    updateMutation.mutate({ id: editingTx.id, ...data });
+  };
 
   // Open the Add Transaction dialog seeded from an existing row's
   // fields (issue #158). Identity-bearing fields (id, transfer_pair,
@@ -629,50 +777,71 @@ export default function TransactionsPage() {
       payee: tx.payee,
       payee_name: tx.payee_name,
       notes: tx.notes,
-    }
-    setEditingTx(null)
-    setDuplicateDraft(draft)
-    setFormResetKey(k => k + 1)
-    setDialogOpen(true)
-  }
+    };
+    setEditingTx(null);
+    setDuplicateDraft(draft);
+    setFormResetKey((k) => k + 1);
+    setDialogOpen(true);
+  };
 
   // Resize: track which column is being dragged so we can clear listeners
   // when the gesture ends. The width is committed to grid state on every
   // pointermove for live feedback (cheap — single React state update).
-  const resizingRef = useRef<{ id: ColumnId; startX: number; startWidth: number } | null>(null)
-  const startResize = (e: React.PointerEvent<HTMLSpanElement>, col: ColumnDef) => {
-    e.preventDefault()
-    e.stopPropagation()
-    resizingRef.current = { id: col.id, startX: e.clientX, startWidth: grid.widthOf(col.id) }
+  const resizingRef = useRef<{
+    id: ColumnId;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+  const startResize = (
+    e: React.PointerEvent<HTMLSpanElement>,
+    col: ColumnDef,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizingRef.current = {
+      id: col.id,
+      startX: e.clientX,
+      startWidth: grid.widthOf(col.id),
+    };
     const onMove = (ev: PointerEvent) => {
-      const r = resizingRef.current
-      if (!r) return
-      grid.setWidth(r.id, r.startWidth + (ev.clientX - r.startX))
-    }
+      const r = resizingRef.current;
+      if (!r) return;
+      grid.setWidth(r.id, r.startWidth + (ev.clientX - r.startX));
+    };
     const onUp = () => {
-      resizingRef.current = null
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
+      resizingRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   const renderHeaderCell = (col: ColumnDef) => {
-    const isSorted = grid.sortBy === col.id
-    const sortIndicator = isSorted ? (grid.sortDir === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />) : null
-    const alignClass = col.align === 'right' ? 'text-right' : 'text-left'
-    const justify = col.align === 'right' ? 'justify-end' : 'justify-start'
-    const cursorClass = col.sortable ? 'cursor-pointer select-none hover:text-foreground' : ''
+    const isSorted = grid.sortBy === col.id;
+    const sortIndicator = isSorted ? (
+      grid.sortDir === "asc" ? (
+        <ArrowUp size={12} />
+      ) : (
+        <ArrowDown size={12} />
+      )
+    ) : null;
+    const alignClass = col.align === "right" ? "text-right" : "text-left";
+    const justify = col.align === "right" ? "justify-end" : "justify-start";
+    const cursorClass = col.sortable
+      ? "cursor-pointer select-none hover:text-foreground"
+      : "";
     // Match the amount/attachments body cells' pr-5 so right-aligned
     // headers line up with their values (issue #161 polish).
-    const padX = col.align === 'right' ? 'pr-5' : ''
+    const padX = col.align === "right" ? "pr-5" : "";
     return (
       <TableHead
         key={col.id}
         style={{ width: grid.widthOf(col.id), minWidth: grid.widthOf(col.id) }}
         className={`relative text-xs font-medium text-muted-foreground py-3 ${alignClass} ${padX}`}
-        onClick={() => { if (col.sortable) grid.toggleSort(col.id) }}
+        onClick={() => {
+          if (col.sortable) grid.toggleSort(col.id);
+        }}
       >
         <div className={`flex items-center gap-1 ${justify} ${cursorClass}`}>
           <span className="truncate">{t(col.labelKey)}</span>
@@ -685,24 +854,26 @@ export default function TransactionsPage() {
           className="absolute right-0 top-0 h-full w-2 -mr-1 cursor-col-resize select-none hover:bg-primary/40 active:bg-primary/60"
         />
       </TableHead>
-    )
-  }
+    );
+  };
 
-  const stripHashtags = (notes: string) => notes.replace(/#[\wÀ-ž-]+/g, '').trim()
+  const stripHashtags = (notes: string) =>
+    notes.replace(/#[\wÀ-ž-]+/g, "").trim();
 
   const renderAmountCell = (tx: Transaction) => {
-    const displayAmount = tx.is_shared && tx.viewer_share != null
-      ? Number(tx.viewer_share)
-      : Number(tx.amount)
+    const displayAmount =
+      tx.is_shared && tx.viewer_share != null
+        ? Number(tx.viewer_share)
+        : Number(tx.amount);
     return (
       <>
         <span
           className={`text-xs md:text-sm font-bold tabular-nums ${
-            tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'
+            tx.type === "credit" ? "text-emerald-600" : "text-rose-500"
           }`}
         >
           {mask(
-            `${tx.type === 'credit' ? '+' : '−'}${formatCurrency(
+            `${tx.type === "credit" ? "+" : "−"}${formatCurrency(
               Math.abs(displayAmount),
               tx.currency,
               locale,
@@ -711,78 +882,112 @@ export default function TransactionsPage() {
         </span>
         {tx.is_shared && (
           <p className="text-[10px] text-muted-foreground tabular-nums">
-            {t('splitGroups.sharedRowParent', {
-              total: formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale),
+            {t("splitGroups.sharedRowParent", {
+              total: formatCurrency(
+                Math.abs(Number(tx.amount)),
+                tx.currency,
+                locale,
+              ),
             })}
           </p>
         )}
-        {!tx.is_shared && tx.viewer_share != null
-          && Math.abs(Number(tx.viewer_share)) !== Math.abs(Number(tx.amount)) && (
-          <p className="text-[10px] text-muted-foreground tabular-nums">
-            {t('splitGroups.ownerRowYourShare', {
-              share: formatCurrency(Math.abs(Number(tx.viewer_share)), tx.currency, locale),
-            })}
-          </p>
-        )}
+        {!tx.is_shared &&
+          tx.viewer_share != null &&
+          Math.abs(Number(tx.viewer_share)) !== Math.abs(Number(tx.amount)) && (
+            <p className="text-[10px] text-muted-foreground tabular-nums">
+              {t("splitGroups.ownerRowYourShare", {
+                share: formatCurrency(
+                  Math.abs(Number(tx.viewer_share)),
+                  tx.currency,
+                  locale,
+                ),
+              })}
+            </p>
+          )}
         {tx.amount_primary != null && tx.currency !== userCurrency && (
           <div className="flex items-center justify-end gap-1">
             {tx.fx_fallback && (
-              <span title={t('transactions.fxFallbackTooltip')}><AlertTriangle size={11} className="text-amber-500 shrink-0" /></span>
+              <span title={t("transactions.fxFallbackTooltip")}>
+                <AlertTriangle size={11} className="text-amber-500 shrink-0" />
+              </span>
             )}
             <span className="text-[10px] text-muted-foreground tabular-nums">
-              {mask(formatCurrency(Math.abs(tx.amount_primary), userCurrency, locale))}
+              {mask(
+                formatCurrency(
+                  Math.abs(tx.amount_primary),
+                  userCurrency,
+                  locale,
+                ),
+              )}
             </span>
           </div>
         )}
       </>
-    )
-  }
+    );
+  };
 
   const renderDescriptionCell = (tx: Transaction) => {
-    const showInlineDate = !grid.isVisible('date')
-    const showInlineNotes = !grid.isVisible('notes')
-    const showInlineTags = !grid.isVisible('tags')
-    const noteText = tx.notes ? stripHashtags(tx.notes) : ''
-    const noteTags = tx.notes ? parseHashtags(tx.notes) : []
+    const showInlineDate = !grid.isVisible("date");
+    const showInlineNotes = !grid.isVisible("notes");
+    const showInlineTags = !grid.isVisible("tags");
+    const noteText = tx.notes ? stripHashtags(tx.notes) : "";
+    const noteTags = tx.notes ? parseHashtags(tx.notes) : [];
     return (
       <div className="flex items-center gap-2 md:gap-3">
-        <CategoryIcon icon={tx.category?.icon} color={tx.category?.color} size="lg" />
+        <CategoryIcon
+          icon={tx.category?.icon}
+          color={tx.category?.color}
+          size="lg"
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="text-sm font-semibold text-foreground truncate">{tx.description}</p>
+            <p
+              className={`text-sm font-semibold text-foreground truncate ${tx.is_ignored ? "line-through text-muted-foreground" : ""}`}
+            >
+              {tx.description}
+            </p>
             {tx.group_id && (
               <span
                 className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 bg-violet-50 border border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-900 px-1.5 py-0.5 rounded-full"
-                title={t('splitGroups.sharedRowTooltip')}
+                title={t("splitGroups.sharedRowTooltip")}
               >
                 {tx.is_shared && tx.parent_owner_name
-                  ? t('splitGroups.sharedRowBadgeAuthor', {
+                  ? t("splitGroups.sharedRowBadgeAuthor", {
                       author: tx.parent_owner_name,
-                      group: groupNameById.get(tx.group_id) ?? '',
+                      group: groupNameById.get(tx.group_id) ?? "",
                     })
-                  : t('splitGroups.ownerRowBadge', {
-                      group: groupNameById.get(tx.group_id) ?? '',
+                  : t("splitGroups.ownerRowBadge", {
+                      group: groupNameById.get(tx.group_id) ?? "",
                     })}
               </span>
             )}
             {!!tx.transfer_pair_id && (
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded-full">
                 <ArrowLeftRight className="h-3 w-3" />
-                {t('transactions.transfer')}
-                <span title={t('transactions.transferTooltip')}><HelpCircle className="h-3 w-3 text-blue-400" /></span>
+                {t("transactions.transfer")}
+                <span title={t("transactions.transferTooltip")}>
+                  <HelpCircle className="h-3 w-3 text-blue-400" />
+                </span>
               </span>
             )}
-            {recurringList?.some(r => r.description === tx.description && r.type === tx.type) && (
+            {recurringList?.some(
+              (r) => r.description === tx.description && r.type === tx.type,
+            ) && (
               <span className="text-[10px] font-semibold uppercase tracking-wide text-primary bg-primary/5 border border-primary/10 px-1.5 py-0.5 rounded-full">
-                {t('transactions.recurringBadge')}
+                {t("transactions.recurringBadge")}
               </span>
             )}
             {tx.installment_number != null && tx.total_installments != null && (
               <span
                 className="inline-flex items-center text-[10px] font-bold tabular-nums text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/20 border border-amber-200 dark:border-amber-500/30 px-1.5 py-0.5 rounded-full"
-                title={tx.installment_total_amount != null
-                  ? t('transactions.installmentTooltip', { count: tx.total_installments, total: tx.installment_total_amount })
-                  : undefined}
+                title={
+                  tx.installment_total_amount != null
+                    ? t("transactions.installmentTooltip", {
+                        count: tx.total_installments,
+                        total: tx.installment_total_amount,
+                      })
+                    : undefined
+                }
               >
                 {tx.installment_number}/{tx.total_installments}
               </span>
@@ -790,14 +995,39 @@ export default function TransactionsPage() {
             {(tx.attachment_count ?? 0) > 0 && (
               <Paperclip size={12} className="text-muted-foreground shrink-0" />
             )}
+            {tx.is_ignored &&
+              (ignoredFilter === "only" ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    ignoreMutation.mutate(tx.id);
+                  }}
+                  disabled={ignoreMutation.isPending}
+                  title="Unignore transaction"
+                  className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 bg-slate-100 border border-slate-200 dark:bg-slate-800/60 dark:text-slate-400 dark:border-slate-700 px-1.5 py-0.5 rounded-full shrink-0 hover:bg-rose-50 hover:text-rose-500 hover:border-rose-200 dark:hover:bg-rose-950/40 dark:hover:text-rose-400 dark:hover:border-rose-800 transition-colors disabled:opacity-40"
+                >
+                  <EyeOff className="h-2.5 w-2.5" />
+                  Ignored
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 bg-slate-100 border border-slate-200 dark:bg-slate-800/60 dark:text-slate-400 dark:border-slate-700 px-1.5 py-0.5 rounded-full shrink-0">
+                  <EyeOff className="h-2.5 w-2.5" />
+                  Ignored
+                </span>
+              ))}
           </div>
           {showInlineDate && (
-            <p className="text-xs text-muted-foreground mt-0.5">{new Date(tx.date + 'T00:00:00').toLocaleDateString(locale)}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {new Date(tx.date + "T00:00:00").toLocaleDateString(locale)}
+            </p>
           )}
           {(showInlineNotes || showInlineTags) && tx.notes && (
             <div className="mt-1 space-y-0.5">
               {showInlineNotes && noteText && (
-                <p className="text-xs text-muted-foreground italic leading-snug">{noteText}</p>
+                <p className="text-xs text-muted-foreground italic leading-snug">
+                  {noteText}
+                </p>
               )}
               {showInlineTags && noteTags.length > 0 && (
                 <div className="flex flex-wrap gap-1">
@@ -805,7 +1035,10 @@ export default function TransactionsPage() {
                     <span
                       key={tag}
                       className="inline-block text-[11px] font-medium bg-primary/5 text-primary border border-primary/10 px-1.5 py-0 rounded-full leading-5 cursor-pointer hover:bg-primary/10 transition-colors"
-                      onClick={(e) => { e.stopPropagation(); addTagFilter(tag) }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        addTagFilter(tag);
+                      }}
                     >
                       {tag}
                     </span>
@@ -816,66 +1049,102 @@ export default function TransactionsPage() {
           )}
         </div>
       </div>
-    )
-  }
+    );
+  };
 
   const renderBodyCell = (col: ColumnDef, tx: Transaction) => {
-    const widthStyle = { width: grid.widthOf(col.id), minWidth: grid.widthOf(col.id) }
-    const alignClass = col.align === 'right' ? 'text-right' : ''
-    const baseClass = `py-2.5 ${alignClass}`
+    const widthStyle = {
+      width: grid.widthOf(col.id),
+      minWidth: grid.widthOf(col.id),
+    };
+    const alignClass = col.align === "right" ? "text-right" : "";
+    const baseClass = `py-2.5 ${alignClass}`;
     switch (col.id) {
-      case 'date':
+      case "date":
         return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm text-muted-foreground tabular-nums`}>
-            {new Date(tx.date + 'T00:00:00').toLocaleDateString(locale)}
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} text-sm text-muted-foreground tabular-nums`}
+          >
+            {new Date(tx.date + "T00:00:00").toLocaleDateString(locale)}
           </TableCell>
-        )
-      case 'description':
+        );
+      case "description":
         return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} pl-2 max-w-0`}>
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} pl-2 max-w-0`}
+          >
             {renderDescriptionCell(tx)}
           </TableCell>
-        )
-      case 'category':
+        );
+      case "category":
         return (
           <TableCell key={col.id} style={widthStyle} className={baseClass}>
             {tx.category ? (
-              <span className="text-sm text-muted-foreground">{tx.category.name}</span>
+              <span className="text-sm text-muted-foreground">
+                {tx.category.name}
+              </span>
             ) : (
-              <span className="text-xs text-muted-foreground italic">{t('transactions.noCategory')}</span>
+              <span className="text-xs text-muted-foreground italic">
+                {t("transactions.noCategory")}
+              </span>
             )}
           </TableCell>
-        )
-      case 'account':
+        );
+      case "account":
         return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm text-muted-foreground`}>
-            {getAccountName(accountsList?.find((a) => a.id === tx.account_id) ?? { name: '', display_name: null }) || (
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} text-sm text-muted-foreground`}
+          >
+            {getAccountName(
+              accountsList?.find((a) => a.id === tx.account_id) ?? {
+                name: "",
+                display_name: null,
+              },
+            ) || <span className="text-muted-foreground">—</span>}
+          </TableCell>
+        );
+      case "amount":
+        return (
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} pr-5`}
+          >
+            {renderAmountCell(tx)}
+          </TableCell>
+        );
+      case "payee":
+        return (
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} text-sm text-muted-foreground`}
+          >
+            {tx.payee_name ?? tx.payee ?? (
               <span className="text-muted-foreground">—</span>
             )}
           </TableCell>
-        )
-      case 'amount':
+        );
+      case "notes": {
+        const text = tx.notes ? stripHashtags(tx.notes) : "";
         return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} pr-5`}>
-            {renderAmountCell(tx)}
-          </TableCell>
-        )
-      case 'payee':
-        return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm text-muted-foreground`}>
-            {tx.payee_name ?? tx.payee ?? <span className="text-muted-foreground">—</span>}
-          </TableCell>
-        )
-      case 'notes': {
-        const text = tx.notes ? stripHashtags(tx.notes) : ''
-        return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-xs text-muted-foreground italic max-w-0 truncate`}>
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} text-xs text-muted-foreground italic max-w-0 truncate`}
+          >
             {text || <span className="not-italic">—</span>}
           </TableCell>
-        )
+        );
       }
-      case 'tags': {
-        const tags = tx.notes ? parseHashtags(tx.notes) : []
+      case "tags": {
+        const tags = tx.notes ? parseHashtags(tx.notes) : [];
         return (
           <TableCell key={col.id} style={widthStyle} className={baseClass}>
             {tags.length === 0 ? (
@@ -886,7 +1155,10 @@ export default function TransactionsPage() {
                   <span
                     key={tag}
                     className="inline-block text-[11px] font-medium bg-primary/5 text-primary border border-primary/10 px-1.5 py-0 rounded-full leading-5 cursor-pointer hover:bg-primary/10"
-                    onClick={(e) => { e.stopPropagation(); addTagFilter(tag) }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      addTagFilter(tag);
+                    }}
                   >
                     {tag}
                   </span>
@@ -894,42 +1166,63 @@ export default function TransactionsPage() {
               </div>
             )}
           </TableCell>
-        )
+        );
       }
-      case 'attachments':
+      case "attachments":
         return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} pr-5 text-sm text-muted-foreground tabular-nums`}>
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} pr-5 text-sm text-muted-foreground tabular-nums`}
+          >
             {(tx.attachment_count ?? 0) > 0 ? (
               <span className="inline-flex items-center gap-1 justify-end w-full">
-                <Paperclip size={12} />{tx.attachment_count}
+                <Paperclip size={12} />
+                {tx.attachment_count}
               </span>
-            ) : <span>—</span>}
+            ) : (
+              <span>—</span>
+            )}
           </TableCell>
-        )
-      case 'type':
+        );
+      case "type":
         return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm`}>
-            <span className={tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}>
-              {tx.type === 'credit' ? t('transactions.typeIncome') : t('transactions.typeExpense')}
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} text-sm`}
+          >
+            <span
+              className={
+                tx.type === "credit" ? "text-emerald-600" : "text-rose-500"
+              }
+            >
+              {tx.type === "credit"
+                ? t("transactions.typeIncome")
+                : t("transactions.typeExpense")}
             </span>
           </TableCell>
-        )
-      case 'status':
+        );
+      case "status":
         return (
-          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm text-muted-foreground capitalize`}>
-            {tx.status === 'pending'
-              ? t('transactions.statusPending')
-              : t('transactions.statusPosted')}
+          <TableCell
+            key={col.id}
+            style={widthStyle}
+            className={`${baseClass} text-sm text-muted-foreground capitalize`}
+          >
+            {tx.status === "pending"
+              ? t("transactions.statusPending")
+              : t("transactions.statusPosted")}
           </TableCell>
-        )
+        );
     }
-  }
+  };
 
   return (
     <div>
       <PageHeader
-        section={t('transactions.section')}
-        title={t('transactions.title')}
+        section={t("transactions.section")}
+        title={t("transactions.title")}
         action={
           <div className="flex items-center gap-2">
             <TransactionsColumnPicker state={grid} />
@@ -937,63 +1230,102 @@ export default function TransactionsPage() {
               variant="outline"
               disabled={exporting}
               onClick={async () => {
-                setExporting(true)
+                setExporting(true);
                 try {
                   if (selectedIds.size > 0) {
                     // Selection-only export bypasses other filters and
                     // hits the backend's `transaction_ids` short-circuit.
                     await transactions.export({
                       transaction_ids: Array.from(selectedIds),
-                    })
+                    });
                   } else {
                     await transactions.export({
-                      account_ids: filterAccountIds.length > 0 ? filterAccountIds : undefined,
-                      category_ids: filterCategoryIds.length > 0 ? filterCategoryIds : undefined,
+                      account_ids:
+                        filterAccountIds.length > 0
+                          ? filterAccountIds
+                          : undefined,
+                      category_ids:
+                        filterCategoryIds.length > 0
+                          ? filterCategoryIds
+                          : undefined,
                       uncategorized: filterUncategorized ? true : undefined,
                       from: filterFrom || undefined,
                       to: filterTo || undefined,
                       q: searchQuery || undefined,
-                    })
+                    });
                   }
-                  toast.success(t('transactions.exportSuccess'))
+                  toast.success(t("transactions.exportSuccess"));
                 } catch {
-                  toast.error(t('transactions.exportError'))
+                  toast.error(t("transactions.exportError"));
                 } finally {
-                  setExporting(false)
+                  setExporting(false);
                 }
               }}
             >
               <Download size={16} className="mr-1.5" />
               {exporting
-                ? t('transactions.exporting')
+                ? t("transactions.exporting")
                 : selectedIds.size > 0
-                  ? t('transactions.exportSelected', { count: selectedIds.size })
-                  : t('transactions.exportCsv')}
+                  ? t("transactions.exportSelected", {
+                      count: selectedIds.size,
+                    })
+                  : t("transactions.exportCsv")}
             </Button>
             {/* Duplicate (issue #158): only when a single row is
                 selected. Pre-fills the Add Transaction dialog from
                 that row's fields; identity-bearing fields (id,
                 transfer_pair_id, splits) are not copied. Hidden for
                 shared rows and transfers — they can't be duplicated. */}
-            {selectedIds.size === 1 && (() => {
-              const selectedTx = filteredItems.find(tx => selectedIds.has(tx.id))
-              if (!selectedTx || selectedTx.is_shared || selectedTx.transfer_pair_id) return null
-              return (
-                <Button
-                  variant="outline"
-                  onClick={() => handleDuplicateTransaction(selectedTx)}
-                >
-                  <Copy size={16} className="mr-1.5" />
-                  {t('transactions.duplicate')}
-                </Button>
-              )
-            })()}
-            <Button variant="outline" onClick={() => setTransferDialogOpen(true)}>
+            {selectedIds.size === 1 &&
+              (() => {
+                const selectedTx = filteredItems.find((tx) =>
+                  selectedIds.has(tx.id),
+                );
+                if (
+                  !selectedTx ||
+                  selectedTx.is_shared ||
+                  selectedTx.transfer_pair_id
+                )
+                  return null;
+                return (
+                  <Button
+                    variant="outline"
+                    onClick={() => handleDuplicateTransaction(selectedTx)}
+                  >
+                    <Copy size={16} className="mr-1.5" />
+                    {t("transactions.duplicate")}
+                  </Button>
+                );
+              })()}
+            {selectedIds.size > 0 && (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  bulkIgnoreMutation.mutate({
+                    ids: Array.from(selectedIds),
+                    ignore: true,
+                  })
+                }
+                disabled={bulkIgnoreMutation.isPending}
+              >
+                <EyeOff size={16} className="mr-1.5" />
+                Ignore
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => setTransferDialogOpen(true)}
+            >
               <ArrowLeftRight size={16} className="mr-1.5" />
-              {t('transactions.transfer')}
+              {t("transactions.transfer")}
             </Button>
-            <Button onClick={() => { setEditingTx(null); setDialogOpen(true) }}>
-              + {t('transactions.addManual')}
+            <Button
+              onClick={() => {
+                setEditingTx(null);
+                setDialogOpen(true);
+              }}
+            >
+              + {t("transactions.addManual")}
             </Button>
           </div>
         }
@@ -1004,46 +1336,74 @@ export default function TransactionsPage() {
         searchInput={searchInput}
         onSearchChange={(v) => setSearchInput(v)}
         onSearchSubmit={(value) => {
-          const trimmed = value.trim()
+          const trimmed = value.trim();
           // Tokenize submitted text. `#`-tokens become live tag filter
           // chips below the search bar (filtering applies immediately, no
           // Enter required). Non-`#` text remains as the free-text search
           // query (issue #88).
-          const tokens = trimmed.split(/\s+/).filter(Boolean)
-          const tags = tokens.filter(t => t.startsWith('#'))
-          const text = tokens.filter(t => !t.startsWith('#')).join(' ')
-          tags.forEach(addTagFilter)
-          setSearchInput(text)
-          setSearchQuery(text)
+          const tokens = trimmed.split(/\s+/).filter(Boolean);
+          const tags = tokens.filter((t) => t.startsWith("#"));
+          const text = tokens.filter((t) => !t.startsWith("#")).join(" ");
+          tags.forEach(addTagFilter);
+          setSearchInput(text);
+          setSearchQuery(text);
         }}
         filterAccountIds={filterAccountIds}
-        onAccountIdsChange={(v) => { setFilterAccountIds(v); setPage(1) }}
+        onAccountIdsChange={(v) => {
+          setFilterAccountIds(v);
+          setPage(1);
+        }}
         filterCategoryIds={filterCategoryIds}
-        onCategoryIdsChange={(v) => { setFilterCategoryIds(v); setPage(1) }}
+        onCategoryIdsChange={(v) => {
+          setFilterCategoryIds(v);
+          setPage(1);
+        }}
         filterUncategorized={filterUncategorized}
-        onUncategorizedChange={(v) => { setFilterUncategorized(v); setPage(1) }}
+        onUncategorizedChange={(v) => {
+          setFilterUncategorized(v);
+          setPage(1);
+        }}
         filterPayee={filterPayee}
-        onPayeeChange={(v) => { setFilterPayee(v); setPage(1) }}
+        onPayeeChange={(v) => {
+          setFilterPayee(v);
+          setPage(1);
+        }}
         filterGroupId={filterGroupId}
-        onGroupIdChange={(v) => { setFilterGroupId(v); setPage(1) }}
+        onGroupIdChange={(v) => {
+          setFilterGroupId(v);
+          setPage(1);
+        }}
         filterType={filterType}
-        onTypeChange={(v) => { setFilterType(v); setPage(1) }}
+        onTypeChange={(v) => {
+          setFilterType(v);
+          setPage(1);
+        }}
+        ignoredFilter={ignoredFilter}
+        onIgnoredFilterChange={(v) => {
+          setIgnoredFilter(v);
+          setPage(1);
+        }}
         filterFrom={filterFrom}
         filterTo={filterTo}
-        onDateRangeChange={(from, to) => { setFilterFrom(from); setFilterTo(to); setPage(1) }}
+        onDateRangeChange={(from, to) => {
+          setFilterFrom(from);
+          setFilterTo(to);
+          setPage(1);
+        }}
         onClearAll={() => {
-          setFilterFrom('')
-          setFilterTo('')
-          setFilterAccountIds([])
-          setFilterCategoryIds([])
-          setFilterUncategorized(false)
-          setFilterPayee('')
-          setFilterGroupId('')
-          setFilterType('')
-          setSearchInput('')
-          setSearchQuery('')
-          clearTagFilters()
-          setPage(1)
+          setFilterFrom("");
+          setFilterTo("");
+          setFilterAccountIds([]);
+          setFilterCategoryIds([]);
+          setFilterUncategorized(false);
+          setFilterPayee("");
+          setFilterGroupId("");
+          setFilterType("");
+          setSearchInput("");
+          setSearchQuery("");
+          clearTagFilters();
+          setIgnoredFilter("include");
+          setPage(1);
         }}
         accounts={accountsList ?? []}
         categories={categoriesList ?? []}
@@ -1054,9 +1414,12 @@ export default function TransactionsPage() {
       {filterGroupId && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/15 bg-primary/5 px-3 py-1 text-xs font-medium text-primary">
-            {t('splitGroups.title')}: {filterGroup?.name ?? '…'}
+            {t("splitGroups.title")}: {filterGroup?.name ?? "…"}
             <button
-              onClick={() => { setFilterGroupId(''); setPage(1) }}
+              onClick={() => {
+                setFilterGroupId("");
+                setPage(1);
+              }}
               className="ml-0.5 text-primary/60 hover:text-primary"
               aria-label="Clear group filter"
             >
@@ -1067,7 +1430,7 @@ export default function TransactionsPage() {
       )}
       {tagFilters.length > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5">
-          {tagFilters.map(tag => (
+          {tagFilters.map((tag) => (
             <span
               key={tag}
               className="inline-flex items-center gap-1.5 rounded-full border border-primary/15 bg-primary/5 px-3 py-1 text-xs font-medium text-primary"
@@ -1087,7 +1450,7 @@ export default function TransactionsPage() {
       {isAccrual && (filterFrom || filterTo) && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
           <Info size={12} className="mt-0.5 shrink-0" />
-          <span>{t('dashboard.accrualNote')}</span>
+          <span>{t("dashboard.accrualNote")}</span>
         </div>
       )}
 
@@ -1101,65 +1464,80 @@ export default function TransactionsPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-          <Table style={{ tableLayout: 'fixed' }}>
-            <TableHeader>
-              <TableRow className="border-b border-border hover:bg-transparent">
-                <TableHead style={{ width: 40, minWidth: 40 }} className="py-3 pl-4 pr-0">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    ref={(el) => { if (el) el.indeterminate = someSelected }}
-                    onChange={toggleSelectAll}
-                    className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                  />
-                </TableHead>
-                {grid.visibleColumns.map(renderHeaderCell)}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredItems.map((tx) => (
-                <TableRow
-                  key={tx.id}
-                  ref={tx.id === highlightId ? highlightedRowRef : undefined}
-                  className={`hover:bg-muted border-b border-border last:border-0 ${
-                    selectedIds.has(tx.id) ? 'bg-primary/5' : ''
-                  } ${tx.is_shared ? 'cursor-default' : 'cursor-pointer'}`}
-                  onClick={() => {
-                    if (tx.is_shared) {
-                      // Owned by another user — view in the group context instead.
-                      if (tx.group_id) navigate(`/groups/${tx.group_id}`)
-                      return
-                    }
-                    setEditingTx(tx)
-                    setDialogOpen(true)
-                  }}
-                >
-                  <TableCell style={{ width: 40, minWidth: 40 }} className="py-2.5 pl-4 pr-0">
-                    {/* Bulk operations are scoped to user.id so they
+            <Table style={{ tableLayout: "fixed" }}>
+              <TableHeader>
+                <TableRow className="border-b border-border hover:bg-transparent">
+                  <TableHead
+                    style={{ width: 40, minWidth: 40 }}
+                    className="py-3 pl-4 pr-0"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someSelected;
+                      }}
+                      onChange={toggleSelectAll}
+                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                    />
+                  </TableHead>
+                  {grid.visibleColumns.map(renderHeaderCell)}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredItems.map((tx) => (
+                  <TableRow
+                    key={tx.id}
+                    ref={tx.id === highlightId ? highlightedRowRef : undefined}
+                    className={`group hover:bg-muted border-b border-border last:border-0 ${
+                      selectedIds.has(tx.id) ? "bg-primary/5" : ""
+                    } ${tx.is_shared ? "cursor-default" : "cursor-pointer"} ${
+                      tx.is_ignored && ignoredFilter !== "only"
+                        ? "opacity-40"
+                        : ""
+                    }`}
+                    onClick={() => {
+                      if (tx.is_shared) {
+                        // Owned by another user — view in the group context instead.
+                        if (tx.group_id) navigate(`/groups/${tx.group_id}`);
+                        return;
+                      }
+                      setEditingTx(tx);
+                      setDialogOpen(true);
+                    }}
+                  >
+                    <TableCell
+                      style={{ width: 40, minWidth: 40 }}
+                      className="py-2.5 pl-4 pr-0"
+                    >
+                      {/* Bulk operations are scoped to user.id so they
                         silently skip shared rows — hide the checkbox
                         on those to avoid the dead-end UX. */}
-                    {!tx.is_shared && (
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(tx.id)}
-                        onChange={() => toggleSelect(tx.id)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                      />
-                    )}
-                  </TableCell>
-                  {grid.visibleColumns.map(col => renderBodyCell(col, tx))}
-                </TableRow>
-              ))}
-              {filteredItems.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={grid.visibleColumns.length + 1} className="text-center py-16 text-muted-foreground">
-                    {t('transactions.noResults')}
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
+                      {!tx.is_shared && (
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(tx.id)}
+                          onChange={() => toggleSelect(tx.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                        />
+                      )}
+                    </TableCell>
+                    {grid.visibleColumns.map((col) => renderBodyCell(col, tx))}
+                  </TableRow>
+                ))}
+                {filteredItems.length === 0 && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={grid.visibleColumns.length + 1}
+                      className="text-center py-16 text-muted-foreground"
+                    >
+                      {t("transactions.noResults")}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
           </div>
         )}
         {/* Filtered summary (issue #185): income / expenses / net across
@@ -1167,28 +1545,52 @@ export default function TransactionsPage() {
         {!isLoading && data?.summary && filteredItems.length > 0 && (
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border bg-muted/30 px-4 py-2.5">
             <span className="mr-auto text-xs text-muted-foreground">
-              {t('transactions.summaryCount', { count: data.total })}
+              {t("transactions.summaryCount", { count: data.total })}
             </span>
             <span className="flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryIncome')}</span>
+              <span className="text-muted-foreground">
+                {t("transactions.summaryIncome")}
+              </span>
               <span className="text-sm font-semibold tabular-nums text-emerald-600">
-                {mask(formatCurrency(data.summary.income, data.summary.currency, locale))}
+                {mask(
+                  formatCurrency(
+                    data.summary.income,
+                    data.summary.currency,
+                    locale,
+                  ),
+                )}
               </span>
             </span>
             <span className="flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryExpenses')}</span>
+              <span className="text-muted-foreground">
+                {t("transactions.summaryExpenses")}
+              </span>
               <span className="text-sm font-semibold tabular-nums text-rose-500">
-                {mask(formatCurrency(data.summary.expense, data.summary.currency, locale))}
+                {mask(
+                  formatCurrency(
+                    data.summary.expense,
+                    data.summary.currency,
+                    locale,
+                  ),
+                )}
               </span>
             </span>
             <span className="flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryNet')}</span>
+              <span className="text-muted-foreground">
+                {t("transactions.summaryNet")}
+              </span>
               <span
                 className={`text-sm font-bold tabular-nums ${
-                  data.summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'
+                  data.summary.net >= 0 ? "text-emerald-600" : "text-rose-500"
                 }`}
               >
-                {mask(formatCurrency(data.summary.net, data.summary.currency, locale))}
+                {mask(
+                  formatCurrency(
+                    data.summary.net,
+                    data.summary.currency,
+                    locale,
+                  ),
+                )}
               </span>
             </span>
           </div>
@@ -1197,14 +1599,16 @@ export default function TransactionsPage() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className={`flex items-center justify-center gap-2 ${selectedIds.size > 0 ? 'pb-16' : ''}`}>
+        <div
+          className={`flex items-center justify-center gap-2 ${selectedIds.size > 0 ? "pb-16" : ""}`}
+        >
           <Button
             variant="outline"
             size="sm"
             disabled={page <= 1}
             onClick={() => setPage(page - 1)}
           >
-            {t('transactions.previous')}
+            {t("transactions.previous")}
           </Button>
           <span className="text-sm text-muted-foreground">
             {page} / {totalPages}
@@ -1215,7 +1619,7 @@ export default function TransactionsPage() {
             disabled={page >= totalPages}
             onClick={() => setPage(page + 1)}
           >
-            {t('transactions.next')}
+            {t("transactions.next")}
           </Button>
         </div>
       )}
@@ -1225,7 +1629,7 @@ export default function TransactionsPage() {
           so the bar visually sits over the transactions list, not the
           full viewport. */}
       <div
-        className={`fixed bottom-0 left-0 right-0 lg:left-60 z-50 transition-transform duration-200 ease-out ${selectedIds.size > 0 ? 'translate-y-0' : 'translate-y-full'}`}
+        className={`fixed bottom-0 left-0 right-0 lg:left-60 z-50 transition-transform duration-200 ease-out ${selectedIds.size > 0 ? "translate-y-0" : "translate-y-full"}`}
       >
         <div className="mx-auto max-w-7xl px-3 md:px-6 pb-4 md:pb-6">
           <div className="flex items-stretch gap-1.5 bg-card border border-border shadow-xl rounded-2xl p-2">
@@ -1239,15 +1643,15 @@ export default function TransactionsPage() {
               </span>
               <div className="hidden sm:flex flex-col leading-tight">
                 <span className="text-[11px] font-medium text-muted-foreground">
-                  {t('transactions.selected')}
+                  {t("transactions.selected")}
                 </span>
                 <span
                   className={`text-sm font-bold tabular-nums ${
-                    selectedNet >= 0 ? 'text-emerald-600' : 'text-rose-500'
+                    selectedNet >= 0 ? "text-emerald-600" : "text-rose-500"
                   }`}
                 >
                   {mask(
-                    `${selectedNet >= 0 ? '+' : '−'}${formatCurrency(
+                    `${selectedNet >= 0 ? "+" : "−"}${formatCurrency(
                       Math.abs(selectedNet),
                       userCurrency,
                       locale,
@@ -1264,17 +1668,20 @@ export default function TransactionsPage() {
               key={bulkCategory}
               value={bulkCategory}
               onChange={(next) => {
-                setBulkCategory(next)
+                setBulkCategory(next);
                 if (next) {
-                  bulkCategorizeMutation.mutate({ ids: Array.from(selectedIds), categoryId: next })
+                  bulkCategorizeMutation.mutate({
+                    ids: Array.from(selectedIds),
+                    categoryId: next,
+                  });
                 }
               }}
               categories={categoriesList ?? []}
               groups={categoryGroupsList ?? []}
-              placeholder={t('transactions.selectCategory')}
+              placeholder={t("transactions.selectCategory")}
               disabled={bulkCategorizeMutation.isPending}
               className="w-44 md:w-56 h-auto py-2 border-transparent bg-transparent hover:bg-muted/60 focus:bg-muted/60 focus-visible:ring-0"
-              contentProps={{ side: 'top', sideOffset: 8 }}
+              contentProps={{ side: "top", sideOffset: 8 }}
             />
 
             <div className="w-px bg-border/60 self-stretch" />
@@ -1286,11 +1693,13 @@ export default function TransactionsPage() {
               variant="ghost"
               disabled={bulkAddToGroupMutation.isPending}
               onClick={() => setBulkAddToGroupOpen(true)}
-              title={t('transactions.addToGroup')}
+              title={t("transactions.addToGroup")}
               className="h-8 px-3 shrink-0 text-sm"
             >
               <Users size={15} className="lg:mr-1.5" />
-              <span className="hidden lg:inline">{t('transactions.addToGroup')}</span>
+              <span className="hidden lg:inline">
+                {t("transactions.addToGroup")}
+              </span>
             </Button>
 
             <div className="w-px bg-border/60 self-stretch" />
@@ -1301,13 +1710,19 @@ export default function TransactionsPage() {
                 type="text"
                 value={bulkTagInput}
                 onChange={(e) => setBulkTagInput(e.target.value)}
-                placeholder={t('transactions.addTagsPlaceholder', '#tag…')}
+                placeholder={t("transactions.addTagsPlaceholder", "#tag…")}
                 className="rounded-lg px-2.5 py-2 text-sm bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:bg-muted/60 w-28 md:w-40"
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && bulkTagInput.trim()) {
-                    e.preventDefault()
-                    const tagList = bulkTagInput.trim().split(/[\s,]+/).filter(Boolean)
-                    bulkAddTagsMutation.mutate({ ids: Array.from(selectedIds), tags: tagList })
+                  if (e.key === "Enter" && bulkTagInput.trim()) {
+                    e.preventDefault();
+                    const tagList = bulkTagInput
+                      .trim()
+                      .split(/[\s,]+/)
+                      .filter(Boolean);
+                    bulkAddTagsMutation.mutate({
+                      ids: Array.from(selectedIds),
+                      tags: tagList,
+                    });
                   }
                 }}
               />
@@ -1316,12 +1731,18 @@ export default function TransactionsPage() {
                 variant="ghost"
                 disabled={!bulkTagInput.trim() || bulkAddTagsMutation.isPending}
                 onClick={() => {
-                  const tagList = bulkTagInput.trim().split(/[\s,]+/).filter(Boolean)
-                  if (tagList.length === 0) return
-                  bulkAddTagsMutation.mutate({ ids: Array.from(selectedIds), tags: tagList })
+                  const tagList = bulkTagInput
+                    .trim()
+                    .split(/[\s,]+/)
+                    .filter(Boolean);
+                  if (tagList.length === 0) return;
+                  bulkAddTagsMutation.mutate({
+                    ids: Array.from(selectedIds),
+                    tags: tagList,
+                  });
                 }}
                 className="h-8 w-8 px-0 shrink-0"
-                title={t('transactions.bulkAddTags', 'Add tags')}
+                title={t("transactions.bulkAddTags", "Add tags")}
               >
                 <Check size={15} />
               </Button>
@@ -1334,21 +1755,27 @@ export default function TransactionsPage() {
               size="sm"
               variant="ghost"
               disabled={!canOpenLinkDialog}
-              title={linkDisabledTooltip ?? t('transactions.linkAsTransfer')}
+              title={linkDisabledTooltip ?? t("transactions.linkAsTransfer")}
               onClick={() => setLinkTransferDialogOpen(true)}
               className="h-8 px-3 shrink-0 text-sm"
             >
               <ArrowLeftRight size={15} className="mr-1.5" />
-              <span className="hidden lg:inline">{t('transactions.linkAsTransfer')}</span>
+              <span className="hidden lg:inline">
+                {t("transactions.linkAsTransfer")}
+              </span>
             </Button>
 
             <div className="ml-auto" />
 
             {/* Close */}
             <button
-              onClick={() => { setSelectedIds(new Set()); setBulkCategory(''); setBulkTagInput('') }}
+              onClick={() => {
+                setSelectedIds(new Set());
+                setBulkCategory("");
+                setBulkTagInput("");
+              }}
               className="text-muted-foreground hover:text-foreground p-2 shrink-0 self-center rounded-lg hover:bg-muted/60"
-              title={t('common.close', 'Close')}
+              title={t("common.close", "Close")}
             >
               <X size={16} />
             </button>
@@ -1362,7 +1789,10 @@ export default function TransactionsPage() {
         onClose={() => setBulkAddToGroupOpen(false)}
         selectedCount={selectedIds.size}
         onSubmit={(payload) =>
-          bulkAddToGroupMutation.mutate({ ids: Array.from(selectedIds), payload })
+          bulkAddToGroupMutation.mutate({
+            ids: Array.from(selectedIds),
+            payload,
+          })
         }
         isPending={bulkAddToGroupMutation.isPending}
       />
@@ -1376,12 +1806,14 @@ export default function TransactionsPage() {
         anchor={linkAnchor}
         accounts={accountsList ?? []}
         onConfirm={(debitId, creditId) => {
-          linkTransferMutation.mutate([debitId, creditId])
+          linkTransferMutation.mutate([debitId, creditId]);
         }}
         onCreateCounterpart={(anchorId, toAccountId) => {
-          createCounterpartMutation.mutate({ anchorId, toAccountId })
+          createCounterpartMutation.mutate({ anchorId, toAccountId });
         }}
-        loading={linkTransferMutation.isPending || createCounterpartMutation.isPending}
+        loading={
+          linkTransferMutation.isPending || createCounterpartMutation.isPending
+        }
       />
 
       {/* Transfer Dialog */}
@@ -1397,14 +1829,14 @@ export default function TransactionsPage() {
       <TransactionDialog
         open={dialogOpen}
         onClose={() => {
-          setDialogOpen(false)
-          setEditingTx(null)
-          setDuplicateDraft(null)
-          setPendingTransferCategoryUpdate(null)
+          setDialogOpen(false);
+          setEditingTx(null);
+          setDuplicateDraft(null);
+          setPendingTransferCategoryUpdate(null);
           // Drop any prior mutation error so reopening the dialog
           // doesn't surface a stale message (issue #155).
-          createMutation.reset()
-          updateMutation.reset()
+          createMutation.reset();
+          updateMutation.reset();
         }}
         transaction={editingTx}
         duplicateDraft={duplicateDraft}
@@ -1412,27 +1844,58 @@ export default function TransactionsPage() {
         categories={categoriesList ?? []}
         categoryGroups={categoryGroupsList ?? []}
         accounts={accountsList ?? []}
-        recurringMatch={editingTx ? recurringList?.find(r => r.description === editingTx.description && r.type === editingTx.type) : undefined}
+        recurringMatch={
+          editingTx
+            ? recurringList?.find(
+                (r) =>
+                  r.description === editingTx.description &&
+                  r.type === editingTx.type,
+              )
+            : undefined
+        }
         onSave={handleTransactionSave}
-        onDelete={editingTx ? () => deleteMutation.mutate(editingTx.id) : undefined}
+        onDelete={
+          editingTx ? () => deleteMutation.mutate(editingTx.id) : undefined
+        }
+        onIgnore={
+          editingTx
+            ? () => {
+                ignoreMutation.mutate(editingTx.id);
+                setDialogOpen(false);
+                setEditingTx(null);
+              }
+            : undefined
+        }
         onUnlinkTransfer={(pairId) => unlinkTransferMutation.mutate(pairId)}
-        loading={createMutation.isPending || updateMutation.isPending || deleteMutation.isPending || unlinkTransferMutation.isPending}
-        error={createMutation.error || updateMutation.error ? extractApiError(createMutation.error || updateMutation.error) : null}
-        isSynced={editingTx?.source === 'sync'}
+        loading={
+          createMutation.isPending ||
+          updateMutation.isPending ||
+          deleteMutation.isPending ||
+          ignoreMutation.isPending ||
+          unlinkTransferMutation.isPending
+        }
+        error={
+          createMutation.error || updateMutation.error
+            ? extractApiError(createMutation.error || updateMutation.error)
+            : null
+        }
+        isSynced={editingTx?.source === "sync"}
       />
 
       <Dialog
         open={isTransferCategoryPromptOpen}
         onOpenChange={(open) => {
-          if (!open) setPendingTransferCategoryUpdate(null)
+          if (!open) setPendingTransferCategoryUpdate(null);
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t('transactions.confirmTransferCategoryTitle')}</DialogTitle>
+            <DialogTitle>
+              {t("transactions.confirmTransferCategoryTitle")}
+            </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            {t('transactions.confirmTransferCategoryDesc')}
+            {t("transactions.confirmTransferCategoryDesc")}
           </p>
           <DialogFooter className="flex-row flex-nowrap items-center justify-end gap-2 sm:space-x-0">
             <Button
@@ -1440,7 +1903,7 @@ export default function TransactionsPage() {
               variant="outline"
               onClick={() => setPendingTransferCategoryUpdate(null)}
             >
-              {t('common.cancel')}
+              {t("common.cancel")}
             </Button>
             <Button
               className="min-w-0 flex-1 truncate"
@@ -1448,7 +1911,7 @@ export default function TransactionsPage() {
               onClick={() => submitPendingTransferCategoryUpdate(false)}
               disabled={updateMutation.isPending}
             >
-              {t('transactions.confirmTransferCategorySingle')}
+              {t("transactions.confirmTransferCategorySingle")}
             </Button>
             <Button
               className="min-w-0 flex-1 truncate"
@@ -1456,12 +1919,12 @@ export default function TransactionsPage() {
               disabled={updateMutation.isPending}
             >
               {updateMutation.isPending
-                ? t('common.loading')
-                : t('transactions.confirmTransferCategoryBoth')}
+                ? t("common.loading")
+                : t("transactions.confirmTransferCategoryBoth")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
-  )
+  );
 }
