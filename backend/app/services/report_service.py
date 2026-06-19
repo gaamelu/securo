@@ -144,13 +144,16 @@ async def _net_worth_at(
     asset_group_ids: Optional[list[uuid.UUID]] = None,
     prefetched_assets: Optional[list] = None,
     prefetched_asset_values: Optional[dict] = None,
+    prefetched_accounts: Optional[list] = None,
 ) -> ReportDataPoint:
     """Compute a single net worth snapshot at a given date, converted to primary currency.
 
     Under a Collection filter (``account_ids`` set), only those accounts are
     summed and only assets in the collection's wallets (``asset_group_ids``)
     are included."""
-    accounts = await _get_open_accounts(session, workspace_id, account_ids)
+    accounts = prefetched_accounts if prefetched_accounts is not None else (
+        await _get_open_accounts(session, workspace_id, account_ids)
+    )
 
     accounts_total = 0.0
     liabilities_total = 0.0
@@ -328,6 +331,9 @@ async def get_net_worth_report(
 
     points = _date_points(start, today, interval)
 
+    # Prefetch account list once — avoids one SELECT per trend point
+    prefetched_accounts = await _get_open_accounts(session, workspace_id, account_ids)
+
     # Prefetch asset list once — avoids one SELECT per trend point
     _asset_filter = account_ids is not None
     _asset_stmt = select(Asset).where(
@@ -349,6 +355,7 @@ async def get_net_worth_report(
             session, workspace_id, point, primary_currency, account_ids, asset_group_ids,
             prefetched_assets=prefetched_assets,
             prefetched_asset_values=prefetched_asset_values,
+            prefetched_accounts=prefetched_accounts,
         )
         dp.date = _format_date_label(point, interval)
         dp.change = round(dp.value - trend[-1].value, 2) if trend else None
@@ -362,6 +369,7 @@ async def get_net_worth_report(
         session, workspace_id, start, primary_currency, account_ids, asset_group_ids,
         prefetched_assets=prefetched_assets,
         prefetched_asset_values=prefetched_asset_values,
+        prefetched_accounts=prefetched_accounts,
     )
     previous = baseline if trend else current
 
