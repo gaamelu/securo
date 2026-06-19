@@ -114,12 +114,36 @@ async def _asset_value_at(
     return total
 
 
+async def _bulk_load_asset_values(
+    session: AsyncSession,
+    asset_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, list[tuple[date, Decimal]]]:
+    """Fetch all AssetValue rows for the given assets in one query.
+
+    Returns asset_id -> [(date, amount), ...] sorted by (date DESC, id DESC),
+    mirroring the order used by the per-asset query in _net_worth_at so that
+    the first entry with date <= cutoff is the correct latest value.
+    """
+    if not asset_ids:
+        return {}
+    rows = await session.execute(
+        select(AssetValue.asset_id, AssetValue.date, AssetValue.amount)
+        .where(AssetValue.asset_id.in_(asset_ids))
+        .order_by(AssetValue.asset_id, desc(AssetValue.date), desc(AssetValue.id))
+    )
+    result: dict[uuid.UUID, list[tuple[date, Decimal]]] = {}
+    for asset_id, val_date, amount in rows.all():
+        result.setdefault(asset_id, []).append((val_date, amount))
+    return result
+
+
 async def _net_worth_at(
     session: AsyncSession, workspace_id: uuid.UUID, cutoff: date,
     primary_currency: str = "USD",
     account_ids: Optional[list[uuid.UUID]] = None,
     asset_group_ids: Optional[list[uuid.UUID]] = None,
     prefetched_assets: Optional[list] = None,
+    prefetched_asset_values: Optional[dict] = None,
 ) -> ReportDataPoint:
     """Compute a single net worth snapshot at a given date, converted to primary currency.
 
@@ -174,13 +198,17 @@ async def _net_worth_at(
         assets = (await session.execute(asset_stmt)).scalars().all()
     assets_total = 0.0
     for asset in assets:
-        val_result = await session.execute(
-            select(AssetValue.amount)
-            .where(AssetValue.asset_id == asset.id, AssetValue.date <= cutoff)
-            .order_by(desc(AssetValue.date), desc(AssetValue.id))
-            .limit(1)
-        )
-        val = val_result.scalar_one_or_none()
+        if prefetched_asset_values is not None:
+            entries = prefetched_asset_values.get(asset.id, [])
+            val = next((amount for d, amount in entries if d <= cutoff), None)
+        else:
+            val_result = await session.execute(
+                select(AssetValue.amount)
+                .where(AssetValue.asset_id == asset.id, AssetValue.date <= cutoff)
+                .order_by(desc(AssetValue.date), desc(AssetValue.id))
+                .limit(1)
+            )
+            val = val_result.scalar_one_or_none()
         if val is not None:
             amount = float(val)
         elif asset.purchase_price is not None and (
@@ -310,6 +338,9 @@ async def get_net_worth_report(
     if _asset_filter:
         _asset_stmt = _asset_stmt.where(Asset.group_id.in_(asset_group_ids or []))
     prefetched_assets = (await session.execute(_asset_stmt)).scalars().all()
+    prefetched_asset_values = await _bulk_load_asset_values(
+        session, [a.id for a in prefetched_assets]
+    )
 
     # Compute snapshot at each date point
     trend: list[ReportDataPoint] = []
@@ -317,6 +348,7 @@ async def get_net_worth_report(
         dp = await _net_worth_at(
             session, workspace_id, point, primary_currency, account_ids, asset_group_ids,
             prefetched_assets=prefetched_assets,
+            prefetched_asset_values=prefetched_asset_values,
         )
         dp.date = _format_date_label(point, interval)
         dp.change = round(dp.value - trend[-1].value, 2) if trend else None
@@ -329,6 +361,7 @@ async def get_net_worth_report(
     baseline = await _net_worth_at(
         session, workspace_id, start, primary_currency, account_ids, asset_group_ids,
         prefetched_assets=prefetched_assets,
+        prefetched_asset_values=prefetched_asset_values,
     )
     previous = baseline if trend else current
 
