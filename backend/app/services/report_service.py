@@ -114,6 +114,130 @@ async def _asset_value_at(
     return total
 
 
+def _compute_signed_amount(
+    tx_type: str,
+    amount: Decimal,
+    amount_primary: Optional[Decimal],
+    tx_currency: str,
+    account_currency: str,
+) -> float:
+    """Replicate the SQL signed-balance expression in Python.
+
+    Mirrors _signed_balance_expr: uses amount when currencies match,
+    otherwise falls back to amount_primary (then amount).
+    """
+    if tx_currency == account_currency:
+        effective = float(amount)
+    else:
+        effective = float(amount_primary) if amount_primary is not None else float(amount)
+    return effective if tx_type == "credit" else -effective
+
+
+async def _bulk_load_account_balance_data(
+    session: AsyncSession,
+    accounts: list,
+    start: date,
+) -> dict[uuid.UUID, dict]:
+    """Preload transaction deltas for all accounts in two queries.
+
+    For bank-connected accounts the base balance comes from account.balance
+    (no extra query); for manual accounts one GROUP BY query sums all
+    transactions up to *start*.  A second query fetches every delta with
+    date > start for all accounts so that balance_at(cutoff) can be
+    resolved in Python for any cutoff in [start, today].
+
+    Returned structure per account_id::
+
+        {
+            'is_bank': bool,
+            'base': float,              # current balance (bank) or sum-up-to-start (manual)
+            'rows': [(date, float), …]  # deltas with date > start, ascending
+        }
+    """
+    if not accounts:
+        return {}
+
+    account_map: dict[uuid.UUID, object] = {a.id: a for a in accounts}
+    manual_ids = [a.id for a in accounts if not a.connection_id]
+    all_ids = list(account_map.keys())
+
+    data: dict[uuid.UUID, dict] = {}
+    for acct in accounts:
+        if acct.connection_id:
+            base = float(acct.balance)
+            if acct.type == "credit_card":
+                base = -base
+            data[acct.id] = {"is_bank": True, "base": base, "rows": []}
+        else:
+            data[acct.id] = {"is_bank": False, "base": 0.0, "rows": []}
+
+    # Query 1 — manual account base: sum of all signed transactions up to start
+    if manual_ids:
+        base_rows = await session.execute(
+            select(
+                Transaction.account_id,
+                Transaction.type,
+                Transaction.amount,
+                Transaction.amount_primary,
+                Transaction.currency,
+            )
+            .where(
+                Transaction.account_id.in_(manual_ids),
+                Transaction.date <= start,
+                Transaction.is_ignored == False,
+            )
+        )
+        for account_id, tx_type, amount, amount_primary, tx_currency in base_rows.all():
+            acct = account_map[account_id]
+            data[account_id]["base"] += _compute_signed_amount(
+                tx_type, amount, amount_primary, tx_currency, acct.currency
+            )
+
+    # Query 2 — all deltas after start for every account (bank + manual)
+    if all_ids:
+        delta_rows = await session.execute(
+            select(
+                Transaction.account_id,
+                Transaction.date,
+                Transaction.type,
+                Transaction.amount,
+                Transaction.amount_primary,
+                Transaction.currency,
+            )
+            .where(
+                Transaction.account_id.in_(all_ids),
+                Transaction.date > start,
+                Transaction.is_ignored == False,
+            )
+            .order_by(Transaction.date)
+        )
+        for account_id, tx_date, tx_type, amount, amount_primary, tx_currency in delta_rows.all():
+            acct = account_map[account_id]
+            signed = _compute_signed_amount(
+                tx_type, amount, amount_primary, tx_currency, acct.currency
+            )
+            data[account_id]["rows"].append((tx_date, signed))
+
+    return data
+
+
+def _balance_from_preloaded(account, cutoff: date, preloaded: dict[uuid.UUID, dict]) -> float:
+    """Compute account balance at *cutoff* from preloaded delta data.
+
+    Bank accounts: balance_at(cutoff) = base − sum(deltas where date > cutoff)
+    Manual accounts: balance_at(cutoff) = base + sum(deltas where date ≤ cutoff)
+    where base for manual accounts is the sum of all transactions up to start.
+    """
+    entry = preloaded[account.id]
+    rows = entry["rows"]
+    if entry["is_bank"]:
+        excess = sum(signed for d, signed in rows if d > cutoff)
+        return entry["base"] - excess
+    else:
+        increment = sum(signed for d, signed in rows if d <= cutoff)
+        return entry["base"] + increment
+
+
 async def _bulk_load_asset_values(
     session: AsyncSession,
     asset_ids: list[uuid.UUID],
@@ -145,6 +269,7 @@ async def _net_worth_at(
     prefetched_assets: Optional[list] = None,
     prefetched_asset_values: Optional[dict] = None,
     prefetched_accounts: Optional[list] = None,
+    prefetched_balance_data: Optional[dict] = None,
 ) -> ReportDataPoint:
     """Compute a single net worth snapshot at a given date, converted to primary currency.
 
@@ -160,7 +285,10 @@ async def _net_worth_at(
     composition: list[ReportCompositionItem] = []
 
     for account in accounts:
-        bal = await _account_balance_at(session, account, cutoff)
+        if prefetched_balance_data is not None:
+            bal = _balance_from_preloaded(account, cutoff, prefetched_balance_data)
+        else:
+            bal = await _account_balance_at(session, account, cutoff)
         converted, _ = await convert(
             session, Decimal(str(abs(bal))), account.currency, primary_currency, cutoff
         )
@@ -333,6 +461,9 @@ async def get_net_worth_report(
 
     # Prefetch account list once — avoids one SELECT per trend point
     prefetched_accounts = await _get_open_accounts(session, workspace_id, account_ids)
+    prefetched_balance_data = await _bulk_load_account_balance_data(
+        session, prefetched_accounts, start
+    )
 
     # Prefetch asset list once — avoids one SELECT per trend point
     _asset_filter = account_ids is not None
@@ -356,6 +487,7 @@ async def get_net_worth_report(
             prefetched_assets=prefetched_assets,
             prefetched_asset_values=prefetched_asset_values,
             prefetched_accounts=prefetched_accounts,
+            prefetched_balance_data=prefetched_balance_data,
         )
         dp.date = _format_date_label(point, interval)
         dp.change = round(dp.value - trend[-1].value, 2) if trend else None
@@ -370,6 +502,7 @@ async def get_net_worth_report(
         prefetched_assets=prefetched_assets,
         prefetched_asset_values=prefetched_asset_values,
         prefetched_accounts=prefetched_accounts,
+        prefetched_balance_data=prefetched_balance_data,
     )
     previous = baseline if trend else current
 
