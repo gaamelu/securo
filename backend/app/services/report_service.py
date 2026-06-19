@@ -119,6 +119,7 @@ async def _net_worth_at(
     primary_currency: str = "USD",
     account_ids: Optional[list[uuid.UUID]] = None,
     asset_group_ids: Optional[list[uuid.UUID]] = None,
+    prefetched_assets: Optional[list] = None,
 ) -> ReportDataPoint:
     """Compute a single net worth snapshot at a given date, converted to primary currency.
 
@@ -159,17 +160,20 @@ async def _net_worth_at(
                 ))
 
     # Per-asset composition at the cutoff date
-    filtered = account_ids is not None
-    asset_stmt = select(Asset).where(
-        Asset.workspace_id == workspace_id,
-        Asset.is_archived == False,
-        Asset.sell_date.is_(None),
-    )
-    if filtered:
-        asset_stmt = asset_stmt.where(Asset.group_id.in_(asset_group_ids or []))
-    asset_result = await session.execute(asset_stmt)
+    if prefetched_assets is not None:
+        assets = prefetched_assets
+    else:
+        filtered = account_ids is not None
+        asset_stmt = select(Asset).where(
+            Asset.workspace_id == workspace_id,
+            Asset.is_archived == False,
+            Asset.sell_date.is_(None),
+        )
+        if filtered:
+            asset_stmt = asset_stmt.where(Asset.group_id.in_(asset_group_ids or []))
+        assets = (await session.execute(asset_stmt)).scalars().all()
     assets_total = 0.0
-    for asset in asset_result.scalars().all():
+    for asset in assets:
         val_result = await session.execute(
             select(AssetValue.amount)
             .where(AssetValue.asset_id == asset.id, AssetValue.date <= cutoff)
@@ -296,10 +300,24 @@ async def get_net_worth_report(
 
     points = _date_points(start, today, interval)
 
+    # Prefetch asset list once — avoids one SELECT per trend point
+    _asset_filter = account_ids is not None
+    _asset_stmt = select(Asset).where(
+        Asset.workspace_id == workspace_id,
+        Asset.is_archived == False,
+        Asset.sell_date.is_(None),
+    )
+    if _asset_filter:
+        _asset_stmt = _asset_stmt.where(Asset.group_id.in_(asset_group_ids or []))
+    prefetched_assets = (await session.execute(_asset_stmt)).scalars().all()
+
     # Compute snapshot at each date point
     trend: list[ReportDataPoint] = []
     for point in points:
-        dp = await _net_worth_at(session, workspace_id, point, primary_currency, account_ids, asset_group_ids)
+        dp = await _net_worth_at(
+            session, workspace_id, point, primary_currency, account_ids, asset_group_ids,
+            prefetched_assets=prefetched_assets,
+        )
         dp.date = _format_date_label(point, interval)
         dp.change = round(dp.value - trend[-1].value, 2) if trend else None
         trend.append(dp)
@@ -308,7 +326,10 @@ async def get_net_worth_report(
     current = trend[-1] if trend else ReportDataPoint(
         date="", value=0, breakdowns={"accounts": 0, "assets": 0, "liabilities": 0}
     )
-    baseline = await _net_worth_at(session, workspace_id, start, primary_currency, account_ids, asset_group_ids)
+    baseline = await _net_worth_at(
+        session, workspace_id, start, primary_currency, account_ids, asset_group_ids,
+        prefetched_assets=prefetched_assets,
+    )
     previous = baseline if trend else current
 
     change_amount = current.value - previous.value
