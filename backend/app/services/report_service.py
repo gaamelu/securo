@@ -120,16 +120,16 @@ def _compute_signed_amount(
     amount_primary: Optional[Decimal],
     tx_currency: str,
     account_currency: str,
-) -> float:
+) -> Decimal:
     """Replicate the SQL signed-balance expression in Python.
 
     Mirrors _signed_balance_expr: uses amount when currencies match,
     otherwise falls back to amount_primary (then amount).
     """
     if tx_currency == account_currency:
-        effective = float(amount)
+        effective = amount
     else:
-        effective = float(amount_primary) if amount_primary is not None else float(amount)
+        effective = amount_primary if amount_primary is not None else amount
     return effective if tx_type == "credit" else -effective
 
 
@@ -150,8 +150,8 @@ async def _bulk_load_account_balance_data(
 
         {
             'is_bank': bool,
-            'base': float,              # current balance (bank) or sum-up-to-start (manual)
-            'rows': [(date, float), …]  # deltas with date > start, ascending
+            'base': Decimal,              # current balance (bank) or sum-up-to-start (manual)
+            'rows': [(date, Decimal), …]  # deltas with date > start, ascending
         }
     """
     if not accounts:
@@ -164,12 +164,12 @@ async def _bulk_load_account_balance_data(
     data: dict[uuid.UUID, dict] = {}
     for acct in accounts:
         if acct.connection_id:
-            base = float(acct.balance)
+            base: Decimal = acct.balance
             if acct.type == "credit_card":
                 base = -base
             data[acct.id] = {"is_bank": True, "base": base, "rows": []}
         else:
-            data[acct.id] = {"is_bank": False, "base": 0.0, "rows": []}
+            data[acct.id] = {"is_bank": False, "base": Decimal(0), "rows": []}
 
     # Query 1 — manual account base: sum of all signed transactions up to start
     if manual_ids:
@@ -231,11 +231,11 @@ def _balance_from_preloaded(account, cutoff: date, preloaded: dict[uuid.UUID, di
     entry = preloaded[account.id]
     rows = entry["rows"]
     if entry["is_bank"]:
-        excess = sum(signed for d, signed in rows if d > cutoff)
-        return entry["base"] - excess
+        excess = sum((signed for d, signed in rows if d > cutoff), Decimal(0))
+        return float(entry["base"] - excess)
     else:
-        increment = sum(signed for d, signed in rows if d <= cutoff)
-        return entry["base"] + increment
+        increment = sum((signed for d, signed in rows if d <= cutoff), Decimal(0))
+        return float(entry["base"] + increment)
 
 
 async def _bulk_load_asset_values(
