@@ -374,6 +374,7 @@ async def test_sync_merges_into_placeholder(session, test_user, test_workspace, 
     assert merged.external_id == "s1"
     assert merged.source == "sync"
     assert merged.recurring_transaction_id == bill_id
+    assert merged.original_description == "NETFLIX SUBSCRIPTION"
     refreshed = await session.get(RecurringTransaction, bill_id)
     assert refreshed.next_occurrence == date(2025, 2, 10)  # NOT advanced again
 
