@@ -936,7 +936,11 @@
     "treatAsTransferBadge": "Umbuchung",
     "ignoreTransfer": "Diese Umbuchung ignorieren",
     "ignoreTransferDesc": "Ignorierte Transaktionen werden nicht in Einnahmen- oder Ausgabenberichten aufgeführt.",
-    "ignoreTransferBadge": "Ignorieren"
+    "ignoreTransferBadge": "Ignorieren",
+    "hiddenBadge": "Ausgeblendet",
+    "hiddenScopeDescription": "Ausgeblendete Standardkategorien werden aus den Kategorieauswahlen entfernt. Bestehende Transaktionen, Budgets, Dashboards und Berichte verwenden sie weiterhin.",
+    "hideDefault": "Standardkategorie ausblenden",
+    "showDefault": "Standardkategorie anzeigen"
   },
   "groups": {
     "title": "Kategoriegruppen",
@@ -951,7 +955,10 @@
     "updated": "Gruppe aktualisiert",
     "deleted": "Gruppe gelöscht",
     "noGroup": "Keine Gruppe",
-    "systemGroup": "Systemgruppe"
+    "systemGroup": "Systemgruppe",
+    "hiddenBadge": "Ausgeblendet",
+    "hideDefault": "Standardgruppe ausblenden",
+    "showDefault": "Standardgruppe anzeigen"
   },
   "import": {
     "acceptedFormats": "Unterstützte Formate: OFX, CSV, QIF, CAMT",

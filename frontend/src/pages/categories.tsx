@@ -14,8 +14,9 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import type { Category, CategoryGroup } from '@/types'
-import { Pencil, Trash2, Plus, ChevronDown, ChevronRight, ChevronsUpDown } from 'lucide-react'
+import { Pencil, Trash2, Plus, ChevronDown, ChevronRight, ChevronsUpDown, Eye, EyeOff } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
+import { invalidateCategoryQueries } from '@/lib/invalidate-queries'
 import { CategoryIcon } from '@/components/category-icon'
 import { IconPicker } from '@/components/icon-picker'
 import { useWorkspace } from '@/contexts/workspace-context'
@@ -56,18 +57,17 @@ export default function CategoriesPage() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 
   const { data: groups } = useQuery({
-    queryKey: ['category-groups'],
-    queryFn: groupsApi.list,
+    queryKey: ['category-groups', 'management'],
+    queryFn: groupsApi.listIncludingHidden,
   })
 
   const { data: categoriesList } = useQuery({
-    queryKey: ['categories'],
-    queryFn: categoriesApi.list,
+    queryKey: ['categories', 'management'],
+    queryFn: categoriesApi.listIncludingHidden,
   })
 
   const invalidateAll = () => {
-    queryClient.invalidateQueries({ queryKey: ['categories'] })
-    queryClient.invalidateQueries({ queryKey: ['category-groups'] })
+    invalidateCategoryQueries(queryClient)
   }
 
   const createCatMutation = useMutation({
@@ -113,6 +113,7 @@ export default function CategoriesPage() {
     setFormIcon(cat?.icon ?? 'circle-help')
     setFormColor(cat?.color ?? '#6366f1')
     setFormTreatAsTransfer(cat?.treat_as_transfer ?? false)
+    setFormIgnoreTransfer(cat?.is_ignored ?? false)
     setCatDialogOpen(true)
   }
 
@@ -123,11 +124,18 @@ export default function CategoriesPage() {
     setGroupDialogOpen(true)
   }
 
+  const renderHiddenBadge = (label: string) => (
+    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border shrink-0">
+      {label}
+    </span>
+  )
+
   const renderCategoryItem = (cat: Category) => (
-    <div key={cat.id} className="flex items-center gap-3 px-4 sm:px-5 pl-6 sm:pl-12 py-2.5 border-b border-border last:border-0 hover:bg-muted transition-colors">
+    <div key={cat.id} className={`flex items-center gap-3 px-4 sm:px-5 pl-6 sm:pl-12 py-2.5 border-b border-border last:border-0 hover:bg-muted transition-colors ${cat.is_hidden ? 'opacity-60' : ''}`}>
       <CategoryIcon icon={cat.icon} color={cat.color} size="md" />
       <div className="flex-1 min-w-0 flex items-center gap-2">
         <span className="text-sm font-medium text-foreground truncate">{cat.name}</span>
+        {cat.is_hidden && renderHiddenBadge(t('categories.hiddenBadge'))}
         {cat.treat_as_transfer && (
           <span
             className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border shrink-0"
@@ -158,7 +166,16 @@ export default function CategoriesPage() {
           >
             <Pencil size={13} />
           </button>
-          {!cat.is_system && (
+          {cat.is_system ? (
+            <button
+              className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/5 transition-colors"
+              onClick={() => updateCatMutation.mutate({ id: cat.id, is_hidden: !cat.is_hidden })}
+              disabled={updateCatMutation.isPending}
+              title={cat.is_hidden ? t('categories.showDefault') : t('categories.hideDefault')}
+            >
+              {cat.is_hidden ? <Eye size={13} /> : <EyeOff size={13} />}
+            </button>
+          ) : (
             <button
               className="p-1.5 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-50 transition-colors"
               onClick={() => deleteCatMutation.mutate(cat.id)}
@@ -176,6 +193,10 @@ export default function CategoriesPage() {
   return (
     <div>
       <PageHeader section={t('categories.title')} title={t('categories.title')} />
+
+      <p className="mb-4 text-sm text-muted-foreground">
+        {t('categories.hiddenScopeDescription')}
+      </p>
 
       <SectionCard>
         <SectionHeader
@@ -214,7 +235,7 @@ export default function CategoriesPage() {
           {groups?.map((group) => {
             const isCollapsed = collapsedGroups.has(group.id)
             return (
-              <div key={group.id}>
+              <div key={group.id} className={group.is_hidden ? 'opacity-60' : ''}>
                 <div className="flex items-center gap-2 px-4 sm:px-5 py-3 border-b border-border bg-muted/40">
                   <button
                     className="flex items-center gap-2 flex-1 min-w-0 text-left"
@@ -223,6 +244,7 @@ export default function CategoriesPage() {
                     {isCollapsed ? <ChevronRight size={14} className="text-muted-foreground shrink-0" /> : <ChevronDown size={14} className="text-muted-foreground shrink-0" />}
                     <CategoryIcon icon={group.icon} color={group.color} size="md" />
                     <span className="text-sm font-semibold" style={{ color: group.color }}>{group.name}</span>
+                    {group.is_hidden && renderHiddenBadge(t('groups.hiddenBadge'))}
                     <span className="text-xs text-muted-foreground">({group.categories.length})</span>
                   </button>
                   {canWrite && (
@@ -234,7 +256,16 @@ export default function CategoriesPage() {
                       >
                         <Pencil size={13} />
                       </button>
-                      {!group.is_system && (
+                      {group.is_system ? (
+                        <button
+                          className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/5 transition-colors"
+                          onClick={() => updateGroupMutation.mutate({ id: group.id, is_hidden: !group.is_hidden })}
+                          disabled={updateGroupMutation.isPending}
+                          title={group.is_hidden ? t('groups.showDefault') : t('groups.hideDefault')}
+                        >
+                          {group.is_hidden ? <Eye size={13} /> : <EyeOff size={13} />}
+                        </button>
+                      ) : (
                         <button
                           className="p-1.5 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-50 transition-colors"
                           onClick={() => deleteGroupMutation.mutate(group.id)}
@@ -302,8 +333,10 @@ export default function CategoriesPage() {
                   className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                   <option value="">{t('categories.noGroup')}</option>
-                  {groups?.map((g) => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
+                  {groups?.filter((g) => !g.is_hidden || g.id === editingCat?.group_id).map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}{g.is_hidden ? ` (${t('groups.hiddenBadge')})` : ''}
+                    </option>
                   ))}
                 </select>
               </div>

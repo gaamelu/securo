@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/page-header'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { RuleDialog } from '@/components/rule-dialog'
+import { findCategoryReference, getRuleCategoryName } from '@/lib/category-reference-utils'
 
 function SectionCard({ children }: { children: React.ReactNode }) {
   return (
@@ -98,7 +99,7 @@ function conditionSummary(conditions: RuleCondition[], conditionsOp: string, t: 
 function actionSummary(actions: RuleAction[], categories: Category[], payeesList: Payee[], t: (key: string) => string): string {
   return actions.map(a => {
     if (a.op === 'set_category') {
-      const cat = categories.find(c => c.id === a.value)
+      const cat = findCategoryReference(categories, a.value)
       return cat ? `→ ${cat.name}` : `→ ${t('transactions.category')}`
     }
     if (a.op === 'set_payee') {
@@ -149,6 +150,11 @@ export default function RulesPage() {
   const { data: categoriesList } = useQuery({
     queryKey: ['categories'],
     queryFn: categoriesApi.list,
+  })
+
+  const { data: allCategoriesList } = useQuery({
+    queryKey: ['categories', 'management'],
+    queryFn: categoriesApi.listIncludingHidden,
   })
 
   const { data: categoryGroupsList } = useQuery({
@@ -275,6 +281,10 @@ export default function RulesPage() {
   }
 
   const categories = useMemo(() => categoriesList ?? [], [categoriesList])
+  const displayCategories = useMemo(
+    () => allCategoriesList ?? categoriesList ?? [],
+    [allCategoriesList, categoriesList],
+  )
   const payees = useMemo(() => payeesList ?? [], [payeesList])
 
   const [sortBy, setSortBy] = useState<'priority' | 'name' | 'category'>('priority')
@@ -288,15 +298,12 @@ export default function RulesPage() {
     }
     if (sortBy === 'category') {
       const getCategoryName = (rule: Rule) => {
-        const action = rule.actions.find(a => a.op === 'set_category')
-        if (!action) return ''
-        const cat = categories.find(c => c.id === action.value)
-        return cat?.name ?? ''
+        return getRuleCategoryName(rule, displayCategories) ?? ''
       }
       return list.sort((a, b) => dir * getCategoryName(a).localeCompare(getCategoryName(b)))
     }
     return list.sort((a, b) => dir * (a.priority - b.priority))
-  }, [rulesList, categories, sortBy, sortDir])
+  }, [rulesList, displayCategories, sortBy, sortDir])
 
   return (
     <div>
@@ -419,7 +426,7 @@ export default function RulesPage() {
                       {conditionSummary(rule.conditions, rule.conditions_op, t, payees)}
                     </p>
                     <p className="text-xs text-emerald-600 font-medium mt-0.5">
-                      {actionSummary(rule.actions, categories, payees, t)}
+                      {actionSummary(rule.actions, displayCategories, payees, t)}
                     </p>
                   </div>
                   {canWrite && (
@@ -485,6 +492,7 @@ export default function RulesPage() {
         rule={editing}
         categories={categories}
         categoryGroups={categoryGroupsList ?? []}
+        currentCategories={allCategoriesList ?? []}
         accounts={accountsList ?? []}
         payees={payees}
         onSave={(data) => {

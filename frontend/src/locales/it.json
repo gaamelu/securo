@@ -936,7 +936,11 @@
     "treatAsTransferBadge": "Trasferimento",
     "ignoreTransfer": "Ignora questo trasferimento",
     "ignoreTransferDesc": "Le transazioni ignorate non appariranno nei report di entrate o spese.",
-    "ignoreTransferBadge": "Ignora"
+    "ignoreTransferBadge": "Ignora",
+    "hiddenBadge": "Nascosta",
+    "hiddenScopeDescription": "Le categorie predefinite nascoste vengono rimosse dai selettori. Le transazioni, i budget, le dashboard e i report esistenti continuano a utilizzarle.",
+    "hideDefault": "Nascondi categoria predefinita",
+    "showDefault": "Mostra categoria predefinita"
   },
   "groups": {
     "title": "Gruppi di categorie",
@@ -951,7 +955,10 @@
     "updated": "Gruppo aggiornato",
     "deleted": "Gruppo eliminato",
     "noGroup": "Nessun gruppo",
-    "systemGroup": "Gruppo di sistema"
+    "systemGroup": "Gruppo di sistema",
+    "hiddenBadge": "Nascosto",
+    "hideDefault": "Nascondi gruppo predefinito",
+    "showDefault": "Mostra gruppo predefinito"
   },
   "import": {
     "acceptedFormats": "Formati accettati: OFX, CSV, QIF, CAMT",

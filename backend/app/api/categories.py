@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
@@ -17,10 +17,15 @@ router = APIRouter(prefix="/api/categories", tags=["categories"])
 
 @router.get("", response_model=list[CategoryRead])
 async def list_categories(
+    include_hidden: bool = Query(False),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
-    return await category_service.get_categories(session, ctx.workspace.id)
+    return await category_service.get_categories(
+        session,
+        ctx.workspace.id,
+        include_hidden=include_hidden,
+    )
 
 
 @router.post("", response_model=CategoryRead, status_code=status.HTTP_201_CREATED)
@@ -39,7 +44,12 @@ async def update_category(
     ctx: WorkspaceContext = Depends(current_writable_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
-    category = await category_service.update_category(session, category_id, ctx.workspace.id, data)
+    try:
+        category = await category_service.update_category(
+            session, category_id, ctx.workspace.id, data
+        )
+    except category_service.CategoryVisibilityError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not category:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
     return category

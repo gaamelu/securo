@@ -1,12 +1,17 @@
 import uuid
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
+from app.models.category_group import CategoryGroup
 from app.schemas.category import CategoryCreate, CategoryUpdate
 from app.services.category_group_service import CATEGORY_TO_GROUP, create_default_groups
+
+
+class CategoryVisibilityError(ValueError):
+    """Raised when visibility is changed for a user-created category."""
 
 
 # Language-keyed translations for default categories
@@ -91,11 +96,22 @@ async def create_default_categories(
     return categories
 
 
-async def get_categories(session: AsyncSession, workspace_id: uuid.UUID) -> list[Category]:
+async def get_categories(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    *,
+    include_hidden: bool = False,
+) -> list[Category]:
+    filters = [Category.workspace_id == workspace_id]
+    if not include_hidden:
+        filters.append(Category.is_hidden.is_(False))
+        filters.append(or_(Category.group_id.is_(None), CategoryGroup.is_hidden.is_(False)))
+
     result = await session.execute(
         select(Category)
-        .where(Category.workspace_id == workspace_id)
-        .order_by(Category.is_system.desc(), Category.name)
+        .outerjoin(CategoryGroup, Category.group_id == CategoryGroup.id)
+        .where(*filters)
+        .order_by(Category.is_hidden.asc(), Category.is_system.desc(), Category.name)
     )
     return list(result.scalars().all())
 
@@ -134,7 +150,11 @@ async def update_category(
     if not category:
         return None
 
-    for key, value in data.model_dump(exclude_unset=True).items():
+    changes = data.model_dump(exclude_unset=True)
+    if changes.get("is_hidden") is True and not category.is_system:
+        raise CategoryVisibilityError("Only system categories can be hidden")
+
+    for key, value in changes.items():
         setattr(category, key, value)
 
     await session.commit()

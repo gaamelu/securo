@@ -262,6 +262,10 @@ export const categories = {
     const { data } = await api.get('/categories')
     return data
   },
+  listIncludingHidden: async (): Promise<Category[]> => {
+    const { data } = await api.get('/categories', { params: { include_hidden: true } })
+    return data
+  },
   create: async (category: Partial<Category>): Promise<Category> => {
     const { data } = await api.post('/categories', category)
     return data
@@ -279,6 +283,10 @@ export const categories = {
 export const categoryGroups = {
   list: async (): Promise<CategoryGroup[]> => {
     const { data } = await api.get('/category-groups')
+    return data
+  },
+  listIncludingHidden: async (): Promise<CategoryGroup[]> => {
+    const { data } = await api.get('/category-groups', { params: { include_hidden: true } })
     return data
   },
   create: async (group: Partial<CategoryGroup>): Promise<CategoryGroup> => {

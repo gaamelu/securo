@@ -936,7 +936,11 @@
     "treatAsTransferBadge": "Transfer",
     "ignoreTransfer": "Ignore this transfer",
     "ignoreTransferDesc": "Ignored transactions won't show on income or expense reports.",
-    "ignoreTransferBadge": "Ignore"
+    "ignoreTransferBadge": "Ignore",
+    "hiddenBadge": "Hidden",
+    "hiddenScopeDescription": "Hidden defaults are removed from category pickers. Existing transactions, budgets, dashboards, and reports continue to use them.",
+    "hideDefault": "Hide default category",
+    "showDefault": "Show default category"
   },
   "groups": {
     "title": "Category Groups",
@@ -951,7 +955,10 @@
     "updated": "Group updated",
     "deleted": "Group deleted",
     "noGroup": "No group",
-    "systemGroup": "System group"
+    "systemGroup": "System group",
+    "hiddenBadge": "Hidden",
+    "hideDefault": "Hide default group",
+    "showDefault": "Show default group"
   },
   "import": {
     "acceptedFormats": "Accepted formats: OFX, CSV, QIF, CAMT",

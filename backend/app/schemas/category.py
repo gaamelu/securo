@@ -23,6 +23,7 @@ class CategoryUpdate(BaseModel):
     group_id: Optional[uuid.UUID] = None
     treat_as_transfer: Optional[bool] = None
     is_ignored: Optional[bool] = None
+    is_hidden: Optional[bool] = None
 
 
 class CategoryRead(CategoryBase):
@@ -30,6 +31,7 @@ class CategoryRead(CategoryBase):
     user_id: uuid.UUID
     group_id: Optional[uuid.UUID] = None
     is_system: bool
+    is_hidden: bool = False
     treat_as_transfer: bool = False
     is_ignored: bool = False
 

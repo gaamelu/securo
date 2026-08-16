@@ -942,7 +942,11 @@
     "treatAsTransferBadge": "Переказ",
     "ignoreTransfer": "Ігнорувати цей переказ",
     "ignoreTransferDesc": "Ігноровані транзакції не відображатимуться у звітах про доходи та витрати.",
-    "ignoreTransferBadge": "Ігнорувати"
+    "ignoreTransferBadge": "Ігнорувати",
+    "hiddenBadge": "Прихована",
+    "hiddenScopeDescription": "Приховані типові категорії вилучаються зі списків вибору. Наявні транзакції, бюджети, панелі та звіти й надалі їх використовують.",
+    "hideDefault": "Приховати типову категорію",
+    "showDefault": "Показати типову категорію"
   },
   "groups": {
     "title": "Групи категорій",
@@ -957,7 +961,10 @@
     "updated": "Групу оновлено",
     "deleted": "Групу видалено",
     "noGroup": "Без групи",
-    "systemGroup": "Системна група"
+    "systemGroup": "Системна група",
+    "hiddenBadge": "Прихована",
+    "hideDefault": "Приховати типову групу",
+    "showDefault": "Показати типову групу"
   },
   "import": {
     "acceptedFormats": "Підтримувані формати: OFX, CSV, QIF, CAMT",

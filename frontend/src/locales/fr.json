@@ -936,7 +936,11 @@
     "treatAsTransferBadge": "Virement",
     "ignoreTransfer": "Ignorer ce virement",
     "ignoreTransferDesc": "Les transactions ignorées n'apparaîtront pas dans les rapports de revenus ou de dépenses.",
-    "ignoreTransferBadge": "Ignorer"
+    "ignoreTransferBadge": "Ignorer",
+    "hiddenBadge": "Masquée",
+    "hiddenScopeDescription": "Les catégories par défaut masquées sont retirées des sélecteurs. Les transactions, budgets, tableaux de bord et rapports existants continuent de les utiliser.",
+    "hideDefault": "Masquer la catégorie par défaut",
+    "showDefault": "Afficher la catégorie par défaut"
   },
   "groups": {
     "title": "Groupes de catégories",
@@ -951,7 +955,10 @@
     "updated": "Groupe mis à jour",
     "deleted": "Groupe supprimé",
     "noGroup": "Aucun groupe",
-    "systemGroup": "Groupe système"
+    "systemGroup": "Groupe système",
+    "hiddenBadge": "Masqué",
+    "hideDefault": "Masquer le groupe par défaut",
+    "showDefault": "Afficher le groupe par défaut"
   },
   "import": {
     "acceptedFormats": "Formats acceptés : OFX, CSV, QIF, CAMT",
