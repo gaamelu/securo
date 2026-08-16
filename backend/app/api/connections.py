@@ -168,8 +168,9 @@ async def sync_connection(
 ):
     try:
         # Manual sync is user-initiated, so ask the provider to pull fresh
-        # data from the bank before we read. Scheduled syncs (Celery) keep
-        # the default behaviour: read whatever the provider already has.
+        # data from the bank before we read. Scheduled syncs use the same
+        # refresh path so background syncs do not perpetuate provider cache
+        # staleness.
         connection, merged_count = await connection_service.sync_connection(
             session,
             connection_id,
