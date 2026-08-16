@@ -21,7 +21,9 @@ celery_app.conf.update(
 celery_app.conf.beat_schedule = {
     "sync-all-connections-hourly": {
         "task": "app.tasks.sync_tasks.sync_all_connections",
-        "schedule": 60 * 60,  # every hour; task itself skips connections synced < 4h ago
+        # Check hourly; the task refreshes the provider only for connections
+        # whose last successful sync is at least four hours old.
+        "schedule": 60 * 60,
     },
     "generate-recurring-daily": {
         "task": "app.tasks.recurring_tasks.generate_all_recurring",
