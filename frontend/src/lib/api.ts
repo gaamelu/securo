@@ -1,6 +1,12 @@
 import axios from 'axios'
 import type { NumberFormat, DateFormat } from '@/lib/format'
 import type {
+  CategoriesData,
+  HygieneData,
+  InsightsEnvelope,
+  InsightsReference,
+} from '@/types/insights'
+import type {
   User,
   AdminUser,
   AdminUserList,
@@ -1202,6 +1208,20 @@ export const reports = {
   cashFlow: async (months = 6, interval = 'daily', baseline = false, accountIds?: string[]): Promise<ReportResponse> => {
     const extra = acctIdsParam(accountIds)
     const { data } = await api.get('/reports/cash-flow', { params: { months, interval, baseline, ...(extra.params ?? {}) }, ...(extra.paramsSerializer ? { paramsSerializer: extra.paramsSerializer } : {}) })
+    return data
+  },
+}
+
+// Insights — only /hygiene and /categories exist on the backend today; the
+// remaining blocks (alerts, vitals, flow, nature, projection, goals,
+// breakeven/purchase-decision) are still being written server-side.
+export const insights = {
+  hygiene: async (): Promise<InsightsEnvelope<HygieneData>> => {
+    const { data } = await api.get('/insights/hygiene')
+    return data
+  },
+  categories: async (reference: InsightsReference, month?: string): Promise<InsightsEnvelope<CategoriesData>> => {
+    const { data } = await api.get('/insights/categories', { params: { reference, month } })
     return data
   },
 }
