@@ -166,24 +166,28 @@ def _build_holding_data(inv: dict) -> HoldingData:
     )
 
 
-def _build_bill_data(raw: dict) -> Optional[BillData]:
+def _build_bill_data(raw: dict) -> BillData:
     """Map a Pluggy bill payload to BillData.
 
-    Returns None when required anchors (id, dueDate, totalAmount) are missing
-    or unparseable — the caller drops those rows rather than failing the whole
-    sync. Negative `totalAmount` is preserved (not abs'd): a negative bill
-    means the bank owes the user money, and silently flipping the sign would
-    hide that fact in reports.
+    Required anchors (id, dueDate, totalAmount) must all be parseable. A
+    partially malformed page cannot be treated as authoritative because
+    silently dropping one bill could unlink valid historical transactions.
+    Negative `totalAmount` is preserved (not abs'd): a negative bill means the
+    bank owes the user money, and silently flipping the sign would hide that
+    fact in reports.
 
     Provider-specific extras (financeCharges, payments, allowsInstallments,
     etc.) survive in `raw_data` and can be promoted to first-class columns
     later if/when the read path actually needs them.
     """
+    if not isinstance(raw, dict):
+        raise ValueError("Pluggy bill row must be an object")
+
     bill_id = raw.get("id")
     due_date = _date_or_none(raw.get("dueDate"))
     total_amount = _decimal_or_none(raw.get("totalAmount"))
     if not bill_id or due_date is None or total_amount is None:
-        return None
+        raise ValueError("Pluggy bill row has invalid required fields")
 
     return BillData(
         external_id=str(bill_id),
@@ -671,39 +675,86 @@ class PluggyProvider(BankProvider):
     async def get_bills(self, credentials: dict, account_external_id: str) -> list[BillData]:
         """Fetch credit-card bills from Pluggy /bills.
 
-        Pluggy only exposes /bills on Regulado (Open Finance) connections.
-        For non-regulated connectors the request returns 4xx — we let the
-        error propagate so the sync layer can decide whether to fall back
-        to locally-computed cycle math (compute_effective_date).
+        Pluggy only exposes /bills on supported credit-card connections.
+        Capability and product-permission denials use the reconciliation
+        fallback. Authentication, throttling, transient availability, and
+        unexpected client errors remain distinct so the provider-neutral sync
+        layer can apply its normal policy.
         """
-        headers = await self._headers()
         bills: list[BillData] = []
         page = 1
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            while True:
-                resp = await client.get(
-                    f"{PLUGGY_API_BASE}/bills",
-                    headers=headers,
-                    params={
-                        "accountId": account_external_id,
-                        "pageSize": 500,
-                        "page": page,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        try:
+            headers = await self._headers()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code == 429:
+                raise ProviderRateLimited(
+                    "Pluggy rate-limited API-key acquisition"
+                ) from exc
+            if status_code == 408 or status_code >= 500:
+                raise BillReconciliationUnavailable(
+                    f"Pluggy API-key acquisition returned {status_code}"
+                ) from exc
+            raise
+        except httpx.TransportError as exc:
+            raise BillReconciliationUnavailable(
+                "Pluggy API-key acquisition transport failed"
+            ) from exc
 
-                results = data.get("results", [])
-                for raw in results:
-                    bill = _build_bill_data(raw)
-                    if bill is not None:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                while True:
+                    resp = await client.get(
+                        f"{PLUGGY_API_BASE}/bills",
+                        headers=headers,
+                        params={
+                            "accountId": account_external_id,
+                            "pageSize": 500,
+                            "page": page,
+                        },
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    if not isinstance(data, dict) or not isinstance(
+                        data.get("results"), list
+                    ):
+                        raise ValueError(
+                            "Pluggy bills payload must contain a results list"
+                        )
+                    results = data["results"]
+                    for raw in results:
+                        bill = _build_bill_data(raw)
                         bills.append(bill)
 
-                total_pages = data.get("totalPages", 1)
-                if page >= total_pages or not results:
-                    break
-                page += 1
+                    total_pages = data.get("totalPages", 1)
+                    if page >= total_pages or not results:
+                        break
+                    page += 1
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code == 401:
+                raise SessionExpiredError(
+                    f"Pluggy rejected the bills snapshot ({status_code})"
+                ) from exc
+            if status_code == 429:
+                raise ProviderRateLimited(
+                    "Pluggy rate-limited the bills snapshot"
+                ) from exc
+            if status_code in (400, 403, 404):
+                raise BillReconciliationUnavailable(
+                    f"Pluggy bills snapshot is unsupported ({status_code})"
+                ) from exc
+            if status_code == 408 or status_code >= 500:
+                raise BillReconciliationUnavailable(
+                    f"Pluggy bills snapshot returned {status_code}"
+                ) from exc
+            raise
+        except httpx.TransportError as exc:
+            raise BillReconciliationUnavailable(
+                "Pluggy bills snapshot transport failed"
+            ) from exc
 
         return bills
 

@@ -60,6 +60,18 @@ cursor-paginated `/v2/transactions` collection (`since=None`). Pluggy controls
 how that snapshot is obtained; the core service only understands normalized
 `TransactionData`.
 
+Pluggy documents that bills are mandatory for regulated Open Finance
+connections, that transactions gain `billId` after the statement is returned,
+and that bill data is refreshed daily. Pluggy also reports missing bill
+permission (`CC_005`) as a product-scoped condition. The adapter therefore
+treats `/bills` capability/permission denial as no snapshot, transient
+transport/server failures as safe fallback, and authentication, throttling,
+malformed payloads, or unexpected client failures as their normal typed errors
+rather than a successful incremental sync. See [Credit Card Bills](https://docs.pluggy.ai/docs/credit-card-bills),
+[Warnings & Status Codes](https://docs.pluggy.ai/docs/warnings-status-codes),
+[Open Finance considerations](https://docs.pluggy.ai/docs/considerations-faq),
+and [Operational Rate Limits](https://docs.pluggy.ai/docs/rate-limits-of).
+
 ### Transaction convergence
 
 All rows in the reconciliation snapshot pass through the same ordered matching
@@ -76,14 +88,32 @@ sync, every matching branch applies the same bill association behavior:
 
 - ignored rows remain frozen;
 - a manual `effective_bill_date` remains authoritative;
-- otherwise `bill_id` is updated to the provider bill and `effective_date` is
-  recalculated from the provider due date;
+- `provider_bill_id` records normalized provider membership independently of
+  the user-facing `bill_id`;
+- `provider_bill_membership_known` distinguishes an authoritative provider null
+  from legacy/sparse membership that has not been observed;
+- without a manual override, `bill_id` is updated to the provider bill and
+  `effective_date` is recalculated from the provider due date;
 - an explicit provider-side null membership clears stale automatic linkage,
   while an omitted/sparse membership field preserves existing state;
+- an authoritative non-null bill id missing from the current bill snapshot
+  clears stale provider and automatic user-facing linkage, but remains
+  "unknown" until it can be resolved; persisted historical bills may confirm
+  that an existing B→B identity is unchanged, but never resolve a new A→B or
+  unknown→B membership, and manual overrides stay untouched;
+- when no successful bills snapshot exists because the capability is
+  temporarily unavailable, absence is not evidence and existing links remain
+  frozen until a later authoritative snapshot;
 - repeated syncs are idempotent.
 
 This removes the existing gap where new rows and exact matches receive bill
 linkage, while manual fuzzy matches and recurring placeholders do not.
+
+Finance charges supplied as bill metadata use the same ownership boundary.
+Provider-owned amount, currency, date, and raw payload may converge, but ignored
+rows remain entirely frozen and a manual bill-date override keeps its effective
+date and user-facing bill. An explicit empty `financeCharges` list removes only
+unchanged automatic rows; omitted metadata is not interpreted as deletion.
 
 ### Consistency model
 
@@ -110,11 +140,15 @@ allowing unrelated connections to sync independently.
 
 Securo does not fabricate missing spend. After a complete snapshot is ingested,
 the service compares each bill returned by the provider with its eligible
-posted linked line-item sum and logs a structured warning for differences
-greater than five cents. Pending authorizations are excluded because they are
-not yet part of the posted statement, and local/manual bills outside the
-provider response are not treated as provider mismatches. The data remains
-visibly inconsistent and is retried on subsequent snapshots.
+posted line-item sum and logs a structured warning for differences greater than
+five cents. Synced rows with known provider membership are grouped by
+`provider_bill_id`; unknown legacy/sparse membership and manual/imported rows
+fall back to their user-facing `bill_id`. This lets a user compensation complete
+a statement without a manual cycle override corrupting provider reconciliation,
+while an explicit provider null still removes the row from that statement.
+Pending authorizations are excluded, and local/manual bills outside the provider
+response are not treated as provider mismatches. The data remains visibly
+inconsistent and is retried on subsequent snapshots.
 
 ## Acceptance cases
 
@@ -146,16 +180,48 @@ visibly inconsistent and is retried on subsequent snapshots.
     provider-backed upsert work begins.
 14. Rounding noise up to five cents and local bills absent from the provider
     response do not emit false mismatch warnings.
+15. Provider membership remains auditable after a user moves a transaction to
+    another cycle, without changing the user's effective bill.
+16. Ignored or manually moved finance charges are not overwritten or deleted;
+    an explicit empty list removes the final untouched automatic charge.
+17. Manual/imported compensation rows still count toward the local bill total.
+18. Bills authentication, rate-limit, malformed-payload, and programming errors
+    are never downgraded to a successful incremental sync.
+19. A non-null provider bill identifier that is absent from the bill snapshot
+    remains unknown rather than becoming an authoritative null.
+20. Transient API-key transport/server failures may use the safe incremental
+    fallback, while malformed successful payloads and credential rejection stay
+    visible as errors.
+21. Moving an existing transaction to an unresolved provider bill cannot leave
+    its previous provider bill membership or automatic bill assignment stale.
+22. A transaction that remains in the same historical provider bill keeps its
+    resolved membership after that bill ages out of the current bills feed.
+23. A transient or unsupported bills snapshot cannot erase an existing
+    provider membership while incremental transaction sync continues.
+24. A successful empty bills response still triggers the complete transaction
+    snapshot, allowing authoritative null membership to remove stale links,
+    without consuming the daily cadence before a bill appears.
+25. A partially malformed bills page fails closed; valid sibling rows are not
+    accepted as an authoritative partial snapshot that could unlink history.
 
 ## Rollout and rollback
 
-The change adds one nullable per-account timestamp through migration `070` and
-performs no destructive cleanup. Deployment is safe for existing installations:
-unsupported providers retain incremental sync, while Pluggy credit-card
-accounts perform a complete cached transaction read daily and on manual refresh
-whenever their bills endpoint succeeds. Downgrade removes only the cadence
-timestamp; all imported rows use the existing transaction schema and remain
-valid.
+Migration `070` adds one nullable per-account cadence timestamp. Migration `071`
+adds nullable `transactions.provider_bill_id` plus an authoritative-membership
+flag, backfilled only from unoverridden synced rows, with `ON DELETE SET NULL`.
+Neither migration performs destructive
+cleanup. Deployment is safe for existing installations: unsupported providers
+retain incremental sync, while Pluggy credit-card accounts perform a complete
+cached transaction read daily and on manual refresh whenever their bills
+endpoint succeeds. The next successful complete snapshot converges provider
+membership for older overridden rows. Downgrade removes only the new metadata;
+all transaction and bill rows remain valid.
+
+The normal test suite remains SQLite-only. Reproducible PostgreSQL proofs for
+the `071` upgrade/backfill/downgrade and the per-connection row lock live in
+`tests/test_provider_bill_reconciliation_postgres.py` and are enabled with
+`SECURO_TEST_POSTGRES_URL`. They create and remove isolated temporary schemas;
+no application rows are modified.
 
 ## Follow-ups
 

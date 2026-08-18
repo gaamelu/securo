@@ -11,8 +11,14 @@ from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
+from app.providers.base import (
+    BillReconciliationUnavailable,
+    ProviderRateLimited,
+    SessionExpiredError,
+)
 from app.providers.pluggy import PluggyProvider
 
 
@@ -123,63 +129,61 @@ async def test_bills_parser_preserves_provider_extras_in_raw_data():
     assert not hasattr(bill, "allows_installments")
 
 
-# ---- Required-field handling: skip rather than crash ----------------------
+# ---- Required-field handling: reject partial snapshots --------------------
 
 
 @pytest.mark.asyncio
-async def test_bills_parser_skips_missing_id():
-    result = await _fetch([
-        {"dueDate": "2026-03-15", "totalAmount": 50},
-        {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
-    ])
-    assert [b.external_id for b in result] == ["bill-ok"]
+async def test_bills_parser_rejects_missing_id():
+    with pytest.raises(ValueError):
+        await _fetch([
+            {"dueDate": "2026-03-15", "totalAmount": 50},
+            {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
+        ])
 
 
 @pytest.mark.asyncio
-async def test_bills_parser_skips_empty_string_id():
-    """Falsy id must be skipped, not coerced to "" — that would collide on the
-    unique(account_id, external_id) constraint downstream."""
-    result = await _fetch([
-        {"id": "", "dueDate": "2026-04-15", "totalAmount": 10},
-        {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
-    ])
-    assert [b.external_id for b in result] == ["bill-ok"]
+async def test_bills_parser_rejects_empty_string_id():
+    with pytest.raises(ValueError):
+        await _fetch([
+            {"id": "", "dueDate": "2026-04-15", "totalAmount": 10},
+            {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
+        ])
 
 
 @pytest.mark.asyncio
-async def test_bills_parser_skips_missing_due_date():
-    result = await _fetch([
-        {"id": "bill-x", "totalAmount": 10},
-        {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
-    ])
-    assert [b.external_id for b in result] == ["bill-ok"]
+async def test_bills_parser_rejects_missing_due_date():
+    with pytest.raises(ValueError):
+        await _fetch([
+            {"id": "bill-x", "totalAmount": 10},
+            {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
+        ])
 
 
 @pytest.mark.asyncio
-async def test_bills_parser_skips_malformed_due_date():
-    result = await _fetch([
-        {"id": "bill-x", "dueDate": "not-a-date", "totalAmount": 10},
-        {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
-    ])
-    assert [b.external_id for b in result] == ["bill-ok"]
+async def test_bills_parser_rejects_malformed_due_date():
+    with pytest.raises(ValueError):
+        await _fetch([
+            {"id": "bill-x", "dueDate": "not-a-date", "totalAmount": 10},
+            {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
+        ])
 
 
 @pytest.mark.asyncio
-async def test_bills_parser_skips_missing_total_amount():
-    result = await _fetch([
-        {"id": "bill-x", "dueDate": "2026-04-15"},
-        {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
-    ])
-    assert [b.external_id for b in result] == ["bill-ok"]
+async def test_bills_parser_rejects_missing_total_amount():
+    with pytest.raises(ValueError):
+        await _fetch([
+            {"id": "bill-x", "dueDate": "2026-04-15"},
+            {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
+        ])
 
 
 @pytest.mark.asyncio
-async def test_bills_parser_skips_malformed_total_amount():
-    result = await _fetch([
-        {"id": "bill-x", "dueDate": "2026-04-15", "totalAmount": "not-a-number"},
-        {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
-    ])
-    assert [b.external_id for b in result] == ["bill-ok"]
+async def test_bills_parser_rejects_malformed_total_amount():
+    with pytest.raises(ValueError):
+        await _fetch([
+            {"id": "bill-x", "dueDate": "2026-04-15", "totalAmount": "not-a-number"},
+            {"id": "bill-ok", "dueDate": "2026-04-15", "totalAmount": 50},
+        ])
 
 
 # ---- Edge formats Pluggy may send -----------------------------------------
@@ -315,13 +319,13 @@ async def test_bills_parser_paginates_across_multiple_pages():
 
 @pytest.mark.asyncio
 async def test_bills_parser_mixed_valid_and_invalid_in_same_page():
-    """Bad rows in the middle of a page don't poison the good ones."""
-    result = await _fetch([
-        {"id": "ok-1", "dueDate": "2026-01-15", "totalAmount": 100},
-        {"id": "bad", "dueDate": "garbage", "totalAmount": 50},
-        {"id": "ok-2", "dueDate": "2026-02-15", "totalAmount": 200},
-    ])
-    assert [b.external_id for b in result] == ["ok-1", "ok-2"]
+    """One malformed row makes the whole snapshot non-authoritative."""
+    with pytest.raises(ValueError):
+        await _fetch([
+            {"id": "ok-1", "dueDate": "2026-01-15", "totalAmount": 100},
+            {"id": "bad", "dueDate": "garbage", "totalAmount": 50},
+            {"id": "ok-2", "dueDate": "2026-02-15", "totalAmount": 200},
+        ])
 
 
 # ---- Default abstract method on BankProvider ------------------------------
@@ -387,3 +391,143 @@ async def test_default_bill_reconciliation_transactions_is_unsupported():
 
     result = await StubProvider().get_bill_reconciliation_transactions({}, "acc")
     assert result is None
+
+
+# ---- get_bills failure classification -------------------------------------
+
+
+def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.pluggy.ai/bills")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError(
+        f"Pluggy returned {status_code}", request=request, response=response
+    )
+
+
+def _auth_http_status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://api.pluggy.ai/auth")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError(
+        f"Pluggy auth returned {status_code}", request=request, response=response
+    )
+
+
+async def _fetch_with_get_error(error: Exception):
+    provider = PluggyProvider()
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=error)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    with patch.object(
+        PluggyProvider, "_ensure_api_key", new=AsyncMock(return_value="fake-key")
+    ), patch("app.providers.pluggy.httpx.AsyncClient", return_value=client):
+        return await provider.get_bills({"item_id": "i"}, "acc-ext-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401])
+async def test_get_bills_maps_authentication_failures_to_session_expired(status_code):
+    with pytest.raises(SessionExpiredError):
+        await _fetch_with_get_error(_http_status_error(status_code))
+
+
+@pytest.mark.asyncio
+async def test_get_bills_maps_rate_limit_to_provider_rate_limited():
+    with pytest.raises(ProviderRateLimited):
+        await _fetch_with_get_error(_http_status_error(429))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [408, 500, 502, 503])
+async def test_get_bills_maps_server_failures_to_reconciliation_unavailable(status_code):
+    with pytest.raises(BillReconciliationUnavailable):
+        await _fetch_with_get_error(_http_status_error(status_code))
+
+
+@pytest.mark.asyncio
+async def test_get_bills_maps_transport_failure_to_reconciliation_unavailable():
+    with pytest.raises(BillReconciliationUnavailable):
+        await _fetch_with_get_error(httpx.TransportError("connection reset"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.TransportError("auth timeout"),
+        _auth_http_status_error(408),
+        _auth_http_status_error(503),
+    ],
+)
+async def test_get_bills_maps_transient_header_failure_to_reconciliation_unavailable(
+    error,
+):
+    with patch.object(PluggyProvider, "_ensure_api_key", new=AsyncMock(side_effect=error)):
+        with pytest.raises(BillReconciliationUnavailable):
+            await PluggyProvider().get_bills({"item_id": "i"}, "acc-ext-1")
+
+
+@pytest.mark.asyncio
+async def test_get_bills_does_not_misclassify_header_auth_rejection_as_session_expired():
+    error = _auth_http_status_error(401)
+    with patch.object(PluggyProvider, "_ensure_api_key", new=AsyncMock(side_effect=error)):
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            await PluggyProvider().get_bills({"item_id": "i"}, "acc-ext-1")
+    assert raised.value is error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 403, 404])
+async def test_get_bills_marks_unsupported_endpoint_as_unavailable(status_code):
+    with pytest.raises(BillReconciliationUnavailable):
+        await _fetch_with_get_error(_http_status_error(status_code))
+
+
+@pytest.mark.asyncio
+async def test_get_bills_propagates_other_http_status_errors():
+    error = _http_status_error(422)
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        await _fetch_with_get_error(error)
+    assert raised.value is error
+
+
+@pytest.mark.asyncio
+async def test_get_bills_propagates_malformed_payload_errors():
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json = MagicMock(return_value={"results": "not-a-list", "totalPages": 1})
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    with patch.object(
+        PluggyProvider, "_ensure_api_key", new=AsyncMock(return_value="fake-key")
+    ), patch("app.providers.pluggy.httpx.AsyncClient", return_value=client):
+        with pytest.raises(ValueError, match="results"):
+            await PluggyProvider().get_bills({"item_id": "i"}, "acc-ext-1")
+
+
+@pytest.mark.asyncio
+async def test_get_bills_rejects_payload_without_results():
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json = MagicMock(return_value={})
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    with patch.object(
+        PluggyProvider, "_ensure_api_key", new=AsyncMock(return_value="fake-key")
+    ), patch("app.providers.pluggy.httpx.AsyncClient", return_value=client):
+        with pytest.raises(ValueError, match="results"):
+            await PluggyProvider().get_bills({"item_id": "i"}, "acc-ext-1")
+
+
+@pytest.mark.asyncio
+async def test_get_bills_propagates_programming_errors():
+    with patch(
+        "app.providers.pluggy._build_bill_data",
+        side_effect=RuntimeError("unexpected programming failure"),
+    ):
+        with pytest.raises(RuntimeError, match="unexpected programming failure"):
+            await _fetch([{"id": "bill-1", "dueDate": "2026-04-15", "totalAmount": 100}])
