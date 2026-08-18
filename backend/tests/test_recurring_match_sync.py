@@ -55,15 +55,23 @@ async def conn_account(session: AsyncSession, test_user, test_workspace):
     return conn, account
 
 
-def _provider(transactions, account_ext="acc-ext-1"):
+def _provider(
+    transactions,
+    account_ext="acc-ext-1",
+    *,
+    account_type="checking",
+    bills=None,
+):
     from app.providers.base import AccountData
     p = AsyncMock()
     p.refresh_credentials = AsyncMock(return_value={"token": "t"})
     p.get_accounts = AsyncMock(return_value=[
         AccountData(external_id=account_ext, name="Checking",
-                    type="checking", balance=Decimal("0"), currency="BRL"),
+                    type=account_type, balance=Decimal("0"), currency="BRL"),
     ])
     p.get_transactions = AsyncMock(return_value=transactions)
+    p.get_bills = AsyncMock(return_value=bills or [])
+    p.get_bill_reconciliation_transactions = AsyncMock(return_value=None)
     return p
 
 
@@ -170,6 +178,58 @@ async def test_sync_promotes_pending_placeholder_to_posted(
     assert merged.recurring_transaction_id == bill_id
     refreshed = await session.get(RecurringTransaction, bill_id)
     assert refreshed.next_occurrence == date(2025, 2, 10)  # NOT advanced again
+
+
+@pytest.mark.asyncio
+async def test_sync_placeholder_merge_applies_provider_bill_link(
+    session, test_user, test_workspace, conn_account
+):
+    """A recurring placeholder claimed by provider sync joins its real bill."""
+    from app.models.credit_card_bill import CreditCardBill
+    from app.providers.base import BillData
+
+    conn, account = conn_account
+    conn_id, account_id = conn.id, account.id
+    account.type = "credit_card"
+    recurring = await _make_bill(
+        session, test_workspace, test_user, account, start_date=date(2025, 1, 10)
+    )
+    recurring_id = recurring.id
+    assert await generate_pending(session, test_user.id, up_to=date(2025, 1, 10)) == 1
+
+    provider_bill = BillData(
+        external_id="provider-bill-1",
+        due_date=date(2025, 2, 5),
+        total_amount=Decimal("39.90"),
+        currency="BRL",
+    )
+    incoming = _tx(
+        external_id="provider-tx-1",
+        description="NETFLIX SUBSCRIPTION",
+        amount=Decimal("39.90"),
+        date=date(2025, 1, 11),
+        bill_external_id="provider-bill-1",
+    )
+    provider = _provider(
+        [incoming], account_type="credit_card", bills=[provider_bill]
+    )
+    provider.get_bill_reconciliation_transactions = AsyncMock(
+        return_value=[incoming]
+    )
+
+    await _run_sync(session, conn_id, test_workspace, test_user, provider)
+
+    bill_row = (await session.execute(
+        select(CreditCardBill).where(
+            CreditCardBill.external_id == "provider-bill-1"
+        )
+    )).scalar_one()
+    txs = await _all_txs(session, account_id)
+    assert len(txs) == 1
+    assert txs[0].recurring_transaction_id == recurring_id
+    assert txs[0].bill_id == bill_row.id
+    assert txs[0].effective_date == bill_row.due_date
+    provider.get_transactions.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

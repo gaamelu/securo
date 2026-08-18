@@ -10,8 +10,14 @@ from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
+from app.providers.base import (
+    BillReconciliationUnavailable,
+    ProviderRateLimited,
+    SessionExpiredError,
+)
 from app.providers.pluggy import PluggyProvider
 
 
@@ -229,6 +235,35 @@ async def test_parser_captures_bill_external_id():
         }
     ])
     assert result[0].bill_external_id == "bill-abc-123"
+    assert result[0].bill_membership_authoritative is True
+
+
+@pytest.mark.asyncio
+async def test_parser_distinguishes_explicit_null_bill_from_omitted_membership():
+    """Only an explicit ``billId`` key may clear an existing bill link."""
+    result = await _fetch([
+        {
+            "id": "tx-explicit-null",
+            "description": "UNBILLED",
+            "amount": -10,
+            "date": "2026-04-10",
+            "type": "DEBIT",
+            "creditCardMetadata": {"billId": None},
+        },
+        {
+            "id": "tx-membership-omitted",
+            "description": "SPARSE",
+            "amount": -20,
+            "date": "2026-04-11",
+            "type": "DEBIT",
+            "creditCardMetadata": {"installmentNumber": 1},
+        },
+    ])
+
+    assert result[0].bill_external_id is None
+    assert result[0].bill_membership_authoritative is True
+    assert result[1].bill_external_id is None
+    assert result[1].bill_membership_authoritative is False
 
 
 @pytest.mark.asyncio
@@ -345,6 +380,73 @@ async def test_get_transactions_follows_cursor_until_next_is_null():
     assert first.kwargs["params"]["createdAtFrom"] == "2026-01-01"
     assert "after" not in first.kwargs["params"]
     assert client.get.await_args_list[1].kwargs["params"]["after"] == "CUR2"
+
+
+@pytest.mark.asyncio
+async def test_bill_reconciliation_reads_all_pages_without_created_at_cutoff():
+    """Pluggy bill snapshots exercise the real cursor-paginated HTTP path."""
+    page1 = MagicMock(raise_for_status=MagicMock())
+    page1.json = MagicMock(return_value={
+        "results": [_txn("old-1")],
+        "next": "https://api.pluggy.ai/v2/transactions?accountId=acc&after=NEXT",
+    })
+    page2 = MagicMock(raise_for_status=MagicMock())
+    page2.json = MagicMock(return_value={"results": [_txn("old-2")], "next": None})
+
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=[page1, page2])
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+
+    provider = PluggyProvider()
+    with patch.object(
+        PluggyProvider, "_ensure_api_key", new=AsyncMock(return_value="k")
+    ), patch("app.providers.pluggy.httpx.AsyncClient", return_value=client):
+        txns = await provider.get_bill_reconciliation_transactions(
+            {"item_id": "i"}, "acc"
+        )
+
+    assert txns is not None
+    assert [t.external_id for t in txns] == ["old-1", "old-2"]
+    assert client.get.await_count == 2
+    first_params = client.get.await_args_list[0].kwargs["params"]
+    second_params = client.get.await_args_list[1].kwargs["params"]
+    assert first_params == {"accountId": "acc"}
+    assert second_params == {"accountId": "acc", "after": "NEXT"}
+
+
+@pytest.mark.asyncio
+async def test_bill_reconciliation_wraps_transport_failure_for_safe_fallback():
+    provider = PluggyProvider()
+    with patch.object(
+        provider,
+        "get_transactions",
+        new=AsyncMock(side_effect=httpx.ReadTimeout("snapshot timed out")),
+    ), pytest.raises(BillReconciliationUnavailable):
+        await provider.get_bill_reconciliation_transactions({}, "acc")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (503, BillReconciliationUnavailable),
+        (429, ProviderRateLimited),
+        (401, SessionExpiredError),
+        (403, SessionExpiredError),
+    ],
+)
+async def test_bill_reconciliation_classifies_http_failures(status_code, expected):
+    provider = PluggyProvider()
+    request = httpx.Request("GET", "https://api.pluggy.ai/v2/transactions")
+    response = httpx.Response(status_code, request=request)
+    error = httpx.HTTPStatusError("snapshot failed", request=request, response=response)
+    with patch.object(
+        provider,
+        "get_transactions",
+        new=AsyncMock(side_effect=error),
+    ), pytest.raises(expected):
+        await provider.get_bill_reconciliation_transactions({}, "acc")
 
 
 # ----- masked account number (issue #408) -----

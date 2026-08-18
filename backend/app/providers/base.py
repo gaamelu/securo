@@ -93,6 +93,10 @@ class TransactionData:
     # Provider-side identifier of the bill this transaction belongs to.
     # Resolved to a credit_card_bills.id FK at sync time (issue #92).
     bill_external_id: Optional[str] = None
+    # True only when the provider payload explicitly included bill-membership
+    # information. This lets sync distinguish a sparse/omitted field from an
+    # authoritative null that should clear stale automatic bill linkage.
+    bill_membership_authoritative: bool = False
 
 
 @dataclass
@@ -217,6 +221,15 @@ class ProviderNotConfiguredError(Exception):
     enables the provider while the API process is. The credentials are fine,
     so callers must not flip the connection to "error": the reconnect banner
     would send the user chasing the wrong fix (and burning setup tokens).
+    """
+
+
+class BillReconciliationUnavailable(Exception):
+    """The optional complete bill snapshot is temporarily unavailable.
+
+    Providers should raise this only when falling back to the ordinary
+    incremental feed is safe. Authentication, rate limiting, malformed data,
+    and programming errors must use their normal error paths instead.
     """
 
 
@@ -379,3 +392,18 @@ class BankProvider(ABC):
         (see app.services.credit_card_service).
         """
         return []
+
+    async def get_bill_reconciliation_transactions(
+        self,
+        credentials: dict,
+        account_external_id: str,
+        payee_source: str = "auto",
+    ) -> Optional[list[TransactionData]]:
+        """Return a complete transaction snapshot suitable for bill sync.
+
+        Providers whose incremental feed can miss older bill assignments may
+        override this capability. ``None`` means unsupported, while ``[]`` is
+        a supported, authoritative empty snapshot. The default preserves the
+        existing incremental behavior for every provider that does not opt in.
+        """
+        return None
