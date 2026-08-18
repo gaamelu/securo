@@ -83,3 +83,73 @@ export function statusColor(status: DeltaStatus | 'good' | 'warn' | 'crit' | 'un
       return 'var(--muted-foreground)'
   }
 }
+
+/**
+ * Maps a coverage percentage (already server-computed, 0-100 — see
+ * HygieneCoverageStat.pct) to a good/warn/crit status band for display.
+ * Thresholds are a display-only convention (>=90 good, >=60 warn, else
+ * crit); the server never sends a status for coverage stats, only counts,
+ * so this is where "how worried should the badge look" lives, not a
+ * recomputation of the percentage itself.
+ */
+export function coverageStatus(pct: number): 'good' | 'warn' | 'crit' {
+  if (pct >= 90) return 'good'
+  if (pct >= 60) return 'warn'
+  return 'crit'
+}
+
+/** One "nature" (fixed/variable/discretionary/unclassified) slice, as a share in [0, 1]. */
+export type NatureKey = 'fixed' | 'variable' | 'discretionary' | 'unclassified'
+
+export interface NatureShareInput {
+  fixed: number
+  variable: number
+  discretionary: number
+  unclassified: number
+}
+
+export interface NatureSharePercent {
+  key: NatureKey
+  /** 0-100, rounded to 1 decimal. */
+  pct: number
+}
+
+/**
+ * Converts a month's `shares` (fractions in [0, 1], or null when the month
+ * had no trusted spend — see NatureMonth.shares) into display-ready
+ * percentages, or `null` to signal "sem dados". A month with null shares
+ * must never render as four 0% bars: that would read as "spent nothing"
+ * rather than "no data available for this month".
+ */
+export function natureSharesToPercents(shares: NatureShareInput | null): NatureSharePercent[] | null {
+  if (shares === null) return null
+  return (['fixed', 'variable', 'discretionary', 'unclassified'] as const).map((key) => ({
+    key,
+    pct: Math.round(shares[key] * 1000) / 10,
+  }))
+}
+
+/**
+ * Design-token color for each nature category. Centralized so no component
+ * hard-codes a hex value for these four slices.
+ */
+export function natureColor(key: NatureKey): string {
+  switch (key) {
+    case 'fixed':
+      return 'var(--chart-1)' // indigo
+    case 'variable':
+      return 'var(--chart-2)' // violet
+    case 'discretionary':
+      return 'var(--chart-4)' // amber
+    case 'unclassified':
+      return 'var(--muted-foreground)'
+  }
+}
+
+/**
+ * Formats a ratio in [0, 1] (e.g. breakeven_discount, ir_rate) as a
+ * fixed-decimal percentage string, e.g. 0.0925 -> "9.25%".
+ */
+export function formatRatioPct(ratio: number, decimals = 2): string {
+  return `${(ratio * 100).toFixed(decimals)}%`
+}

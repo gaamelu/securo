@@ -1,10 +1,12 @@
 import axios from 'axios'
 import type { NumberFormat, DateFormat } from '@/lib/format'
 import type {
+  BreakevenTableData,
   CategoriesData,
   HygieneData,
   InsightsEnvelope,
   InsightsReference,
+  NatureData,
 } from '@/types/insights'
 import type {
   User,
@@ -1212,9 +1214,9 @@ export const reports = {
   },
 }
 
-// Insights — only /hygiene and /categories exist on the backend today; the
-// remaining blocks (alerts, vitals, flow, nature, projection, goals,
-// breakeven/purchase-decision) are still being written server-side.
+// Insights — /hygiene, /categories, /nature, /breakeven-table exist on the
+// backend today; the remaining blocks (alerts, vitals, flow, projection,
+// goals, purchase-decision) are still being written server-side.
 export const insights = {
   hygiene: async (): Promise<InsightsEnvelope<HygieneData>> => {
     const { data } = await api.get('/insights/hygiene')
@@ -1222,6 +1224,16 @@ export const insights = {
   },
   categories: async (reference: InsightsReference, month?: string): Promise<InsightsEnvelope<CategoriesData>> => {
     const { data } = await api.get('/insights/categories', { params: { reference, month } })
+    return data
+  },
+  nature: async (months = 12): Promise<InsightsEnvelope<NatureData>> => {
+    const { data } = await api.get('/insights/nature', { params: { months } })
+    return data
+  },
+  breakevenTable: async (monthlyYield?: number): Promise<InsightsEnvelope<BreakevenTableData>> => {
+    const { data } = await api.get('/insights/breakeven-table', {
+      params: monthlyYield !== undefined ? { monthly_yield: monthlyYield } : undefined,
+    })
     return data
   },
 }

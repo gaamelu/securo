@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { formatDelta, parseMoney, statusColor } from './insights-utils'
+import {
+  coverageStatus,
+  formatDelta,
+  formatRatioPct,
+  natureColor,
+  natureSharesToPercents,
+  parseMoney,
+  statusColor,
+} from './insights-utils'
 
 describe('parseMoney', () => {
   it('parses a fixed-2-decimal money string into a number', () => {
@@ -82,5 +90,80 @@ describe('statusColor', () => {
     expect(statusColor('neutral')).toBe('var(--muted-foreground)')
     expect(statusColor('unknown')).toBe('var(--muted-foreground)')
     expect(statusColor('no_ref')).toBe('var(--muted-foreground)')
+  })
+})
+
+describe('coverageStatus', () => {
+  it('reports "good" at 90% and above', () => {
+    expect(coverageStatus(90)).toBe('good')
+    expect(coverageStatus(100)).toBe('good')
+  })
+
+  it('reports "warn" between 60% and 90%', () => {
+    expect(coverageStatus(60)).toBe('warn')
+    expect(coverageStatus(89.9)).toBe('warn')
+  })
+
+  it('reports "crit" below 60%', () => {
+    expect(coverageStatus(0)).toBe('crit')
+    expect(coverageStatus(59.9)).toBe('crit')
+  })
+})
+
+describe('natureSharesToPercents', () => {
+  it('returns null for a month with no shares, never four zeros', () => {
+    expect(natureSharesToPercents(null)).toBeNull()
+  })
+
+  it('converts fractional shares into rounded 0-100 percentages', () => {
+    const result = natureSharesToPercents({
+      fixed: 0.4521,
+      variable: 0.3,
+      discretionary: 0.15,
+      unclassified: 0.0979,
+    })
+    expect(result).toEqual([
+      { key: 'fixed', pct: 45.2 },
+      { key: 'variable', pct: 30 },
+      { key: 'discretionary', pct: 15 },
+      { key: 'unclassified', pct: 9.8 },
+    ])
+  })
+
+  it('handles an all-zero month distinctly from a null (no-data) month', () => {
+    const result = natureSharesToPercents({ fixed: 0, variable: 0, discretionary: 0, unclassified: 0 })
+    expect(result).toEqual([
+      { key: 'fixed', pct: 0 },
+      { key: 'variable', pct: 0 },
+      { key: 'discretionary', pct: 0 },
+      { key: 'unclassified', pct: 0 },
+    ])
+  })
+})
+
+describe('natureColor', () => {
+  it('returns a distinct design token for each nature key', () => {
+    const colors = new Set([
+      natureColor('fixed'),
+      natureColor('variable'),
+      natureColor('discretionary'),
+      natureColor('unclassified'),
+    ])
+    expect(colors.size).toBe(4)
+  })
+})
+
+describe('formatRatioPct', () => {
+  it('formats a fraction as a fixed-decimal percentage', () => {
+    expect(formatRatioPct(0.0925)).toBe('9.25%')
+  })
+
+  it('supports a custom decimal count', () => {
+    expect(formatRatioPct(0.225, 1)).toBe('22.5%')
+    expect(formatRatioPct(0.01042, 3)).toBe('1.042%')
+  })
+
+  it('handles zero', () => {
+    expect(formatRatioPct(0)).toBe('0.00%')
   })
 })
