@@ -206,8 +206,10 @@ inconsistent and is retried on subsequent snapshots.
 
 ## Rollout and rollback
 
-Migration `070` adds one nullable per-account cadence timestamp. Migration `071`
-adds nullable `transactions.provider_bill_id` plus an authoritative-membership
+The upstream PR uses migrations `070` and `071`. The public `main` now uses
+`070` for fiscal data, so this branch carries the same additive changes as
+migrations `071` and `072`: `071` adds one nullable per-account cadence
+timestamp, and `072` adds nullable `transactions.provider_bill_id` plus an authoritative-membership
 flag, backfilled only from unoverridden synced rows, with `ON DELETE SET NULL`.
 Neither migration performs destructive
 cleanup. Deployment is safe for existing installations: unsupported providers
@@ -218,7 +220,7 @@ membership for older overridden rows. Downgrade removes only the new metadata;
 all transaction and bill rows remain valid.
 
 The normal test suite remains SQLite-only. Reproducible PostgreSQL proofs for
-the `071` upgrade/backfill/downgrade and the per-connection row lock live in
+the `072` upgrade/backfill/downgrade and the per-connection row lock live in
 `tests/test_provider_bill_reconciliation_postgres.py` and are enabled with
 `SECURO_TEST_POSTGRES_URL`. They create and remove isolated temporary schemas;
 no application rows are modified.
