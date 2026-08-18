@@ -583,6 +583,7 @@
     "dayOfMonthHint": "Giorno del mese (1–31)",
     "availableCredit": "Credito disponibile",
     "utilization": "Utilizzo",
+    "otherBillsCommitted": "+ {{amount}} impegnato da altre fatture aperte",
     "cycleSpending": "Spese del ciclo",
     "payments": "Pagamenti",
     "charges": "Addebiti",

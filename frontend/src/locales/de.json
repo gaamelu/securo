@@ -583,6 +583,7 @@
     "dayOfMonthHint": "Tag des Monats (1–31)",
     "availableCredit": "Verfügbarer Kredit",
     "utilization": "Auslastung",
+    "otherBillsCommitted": "+ {{amount}} durch andere offene Rechnungen gebunden",
     "cycleSpending": "Ausgaben im Abrechnungszeitraum",
     "payments": "Zahlungen",
     "charges": "Umsätze",

@@ -589,6 +589,7 @@
     "dayOfMonthHint": "День місяця (1–31)",
     "availableCredit": "Доступний кредит",
     "utilization": "Використання",
+    "otherBillsCommitted": "+ {{amount}} зайнято іншими відкритими рахунками",
     "cycleSpending": "Витрати циклу",
     "payments": "Платежі",
     "charges": "Нарахування",

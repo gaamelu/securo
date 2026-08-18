@@ -1438,6 +1438,31 @@ export default function AccountDetailPage() {
         const utilized = limit != null ? cycleBillTotal : null
         const rawPct = limit != null && limit > 0 && utilized != null ? (utilized / limit) * 100 : null
         const pct = rawPct != null ? Math.min(100, rawPct) : null
+        // Other bills' committed share: the limit is shared across every bill
+        // not yet due (open cycle plus future installments already billed),
+        // not just the one currently in view — a 20% bar here can hide an
+        // 80%-committed card if the other bills aren't shown. Only makes
+        // sense while viewing a bill that hasn't come due yet (current or
+        // future) — for a historical bill, "how much do the other bills
+        // commit" answers a question about a limit snapshot that no longer
+        // applies to that past month. Bills whose due_date has passed are
+        // excluded — there's no is_paid column, but a past-due bill is
+        // either paid (freed the limit) or delinquent (a separate problem
+        // this bar shouldn't obscure with a permanently-stuck-high
+        // percentage). total_amount is the bank's own snapshot in the
+        // bill's native currency — skipped in "primary currency" mode for
+        // foreign-currency cards since summing native and converted totals
+        // would be meaningless without per-bill FX rates.
+        const todayStr = format(new Date(), 'yyyy-MM-dd')
+        const isUpcomingCycle = isInProgressCycle || (activeBill != null && activeBill.due_date >= todayStr)
+        const otherBillsTotal = showPrimary || !isUpcomingCycle
+          ? 0
+          : billsAsc
+            .filter(b => b.id !== activeBill?.id && b.due_date >= todayStr && b.currency === account.currency)
+            .reduce((sum, b) => sum + Number(b.total_amount), 0)
+        const otherPct = limit != null && limit > 0 ? Math.min(100 - (pct ?? 0), (otherBillsTotal / limit) * 100) : null
+        const committedTotal = (utilized ?? 0) + otherBillsTotal
+        const committedPct = limit != null && limit > 0 ? (committedTotal / limit) * 100 : null
         return (
           <div className="bg-card rounded-xl border border-border shadow-sm p-4 sm:p-5 mb-6">
             <div className="flex items-center justify-between mb-3">
@@ -1475,19 +1500,35 @@ export default function AccountDetailPage() {
                   <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide">
                     {t('accounts.utilization')}
                   </p>
-                  <p className={`text-sm font-bold tabular-nums ${rawPct >= 100 ? 'text-rose-500' : 'text-foreground'}`}>{rawPct.toFixed(1)}%</p>
+                  <p className={`text-sm font-bold tabular-nums ${(committedPct ?? rawPct) >= 100 ? 'text-rose-500' : 'text-foreground'}`}>
+                    {(committedPct ?? rawPct).toFixed(1)}%
+                  </p>
                 </div>
-                <div className="h-2 bg-muted/60 rounded-full overflow-hidden mb-2">
+                <div className="h-2 bg-muted/60 rounded-full overflow-hidden mb-2 flex">
                   <div
-                    className={`h-full rounded-full transition-all ${utilizationColor(rawPct)}`}
+                    className={`h-full transition-all ${utilizationColor(rawPct)}`}
                     style={{ width: `${pct}%` }}
                   />
+                  {otherPct != null && otherPct > 0 && (
+                    <div
+                      className="h-full bg-muted-foreground/40 transition-all"
+                      style={{ width: `${otherPct}%` }}
+                    />
+                  )}
                 </div>
-                <p className="text-xs text-muted-foreground tabular-nums mb-4">
+                <p className="text-xs text-muted-foreground tabular-nums mb-1">
                   {mask(formatCurrency(utilized ?? 0, account.currency, locale))}
                   {' / '}
                   {mask(formatCurrency(limit, account.currency, locale))}
                 </p>
+                {otherBillsTotal > 0 && (
+                  <p className="text-xs text-muted-foreground mb-4">
+                    {t('accounts.otherBillsCommitted', {
+                      amount: mask(formatCurrency(otherBillsTotal, account.currency, locale)),
+                    })}
+                  </p>
+                )}
+                {otherBillsTotal === 0 && <div className="mb-4" />}
               </>
             )}
             <div className="grid grid-cols-2 gap-3 pt-3 border-t border-border">

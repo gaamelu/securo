@@ -589,6 +589,7 @@
     "dayOfMonthHint": "День месяца (1–31)",
     "availableCredit": "Доступный кредит",
     "utilization": "Использование",
+    "otherBillsCommitted": "+ {{amount}} занято другими открытыми счетами",
     "cycleSpending": "Расходы цикла",
     "payments": "Платежи",
     "charges": "Начисления",

@@ -616,6 +616,7 @@
     "dayOfMonthHint": "Dzień miesiąca (1–31)",
     "availableCredit": "Dostępny kredyt",
     "utilization": "Wykorzystanie",
+    "otherBillsCommitted": "+ {{amount}} zablokowane przez inne otwarte rachunki",
     "cycleSpending": "Wydatki w cyklu",
     "payments": "Płatności",
     "charges": "Obciążenia",
