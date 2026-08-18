@@ -109,11 +109,12 @@ the same connection, preventing concurrent select-then-insert races while
 allowing unrelated connections to sync independently.
 
 Securo does not fabricate missing spend. After a complete snapshot is ingested,
-the service compares each provider total with the eligible posted linked
-line-item sum and logs a structured warning for differences greater than one
-cent. Pending authorizations are excluded because they are not yet part of the
-posted statement. The data remains visibly inconsistent and is retried on
-subsequent snapshots.
+the service compares each bill returned by the provider with its eligible
+posted linked line-item sum and logs a structured warning for differences
+greater than five cents. Pending authorizations are excluded because they are
+not yet part of the posted statement, and local/manual bills outside the
+provider response are not treated as provider mismatches. The data remains
+visibly inconsistent and is retried on subsequent snapshots.
 
 ## Acceptance cases
 
@@ -143,6 +144,8 @@ subsequent snapshots.
 12. Pending authorizations do not create a false provider-total mismatch.
 13. Concurrent sync entry points serialize on the connection row before any
     provider-backed upsert work begins.
+14. Rounding noise up to five cents and local bills absent from the provider
+    response do not emit false mismatch warnings.
 
 ## Rollout and rollback
 

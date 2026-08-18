@@ -47,6 +47,7 @@ from app.services.payee_service import get_or_create_payee
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+BILL_RECONCILIATION_TOLERANCE = Decimal("0.05")
 
 
 def _clean_logo_url(value: object) -> Optional[str]:
@@ -629,7 +630,7 @@ async def handle_oauth_callback(
         session.add(account)
         await session.flush()
 
-        bills_by_external_id = await _sync_credit_card_bills(
+        bills_by_external_id, _ = await _sync_credit_card_bills(
             session, user_id, account, provider, connection_data.credentials
         )
 
@@ -1107,20 +1108,21 @@ async def _sync_credit_card_bills(
     account: Account,
     provider,
     credentials: dict,
-) -> dict[str, CreditCardBill]:
+) -> tuple[dict[str, CreditCardBill], set[uuid.UUID]]:
     """Fetch and upsert bills for a credit-card account.
 
-    Returns a {external_id: bill} dict so the caller can resolve transaction
-    bill_id without N+1 queries. For non-CC accounts or providers that don't
-    expose bills, returns an empty dict — the read path then falls back to
-    locally-computed cycle math via apply_effective_date.
+    Returns all known bills by external id so the caller can resolve
+    transaction bill_id without N+1 queries, plus the ids returned by the
+    provider in this response. For non-CC accounts or providers that don't
+    expose bills, both collections are empty — the read path then falls back
+    to locally-computed cycle math via apply_effective_date.
 
     Failures are intentionally swallowed (logged at info): a non-regulado
     Pluggy connection 4xx'es here, a temporary API hiccup shouldn't fail
     the whole sync, and the cycle-math fallback already covers the gap.
     """
     if account.type != "credit_card":
-        return {}
+        return {}, set()
 
     try:
         bills_data = await provider.get_bills(credentials, account.external_id)
@@ -1128,10 +1130,10 @@ async def _sync_credit_card_bills(
         logger.info(
             "Skipping credit-card bills sync for account %s: %s", account.id, e
         )
-        return {}
+        return {}, set()
 
     if not bills_data:
-        return {}
+        return {}, set()
 
     existing = (
         await session.execute(
@@ -1176,12 +1178,17 @@ async def _sync_credit_card_bills(
                 session, user_id, account, bill, raw_charges,
             )
 
-    return by_external_id
+    provider_bill_ids = {
+        by_external_id[bd.external_id].id
+        for bd in bills_data
+        if bd.external_id in by_external_id
+    }
+    return by_external_id, provider_bill_ids
 
 
 async def _log_bill_reconciliation_differences(
     session: AsyncSession,
-    account_ids: set[uuid.UUID],
+    bill_ids: set[uuid.UUID],
 ) -> None:
     """Log provider-total mismatches after a complete snapshot was ingested.
 
@@ -1190,16 +1197,16 @@ async def _log_bill_reconciliation_differences(
     paired transfers are excluded with the same shared P/L rule used by the
     credit-card totals UI.
     """
-    if not account_ids:
+    if not bill_ids:
         return
 
     bills = (await session.execute(
-        select(CreditCardBill).where(CreditCardBill.account_id.in_(account_ids))
+        select(CreditCardBill).where(CreditCardBill.id.in_(bill_ids))
     )).scalars().all()
     if not bills:
         return
 
-    bill_ids = [bill.id for bill in bills]
+    selected_bill_ids = [bill.id for bill in bills]
     effective_amount = case(
         (Transaction.currency == Account.currency, Transaction.amount),
         else_=func.coalesce(Transaction.amount_primary, Transaction.amount),
@@ -1215,7 +1222,7 @@ async def _log_bill_reconciliation_differences(
         )
         .join(Account, Transaction.account_id == Account.id)
         .where(
-            Transaction.bill_id.in_(bill_ids),
+            Transaction.bill_id.in_(selected_bill_ids),
             Transaction.source != "opening_balance",
             Transaction.status == "posted",
             counts_as_pnl(),
@@ -1227,7 +1234,7 @@ async def _log_bill_reconciliation_differences(
     for bill in bills:
         local_total = local_totals.get(bill.id, Decimal("0"))
         difference = bill.total_amount - local_total
-        if abs(difference) > Decimal("0.01"):
+        if abs(difference) > BILL_RECONCILIATION_TOLERANCE:
             logger.warning(
                 "Credit-card bill reconciliation mismatch account=%s bill=%s "
                 "provider_total=%s local_total=%s difference=%s",
@@ -1316,6 +1323,7 @@ async def sync_connection(
         user_currency = user.primary_currency if user else get_settings().default_currency
         new_tx_ids: list[uuid.UUID] = []
         reconciled_accounts: list[Account] = []
+        reconciled_bill_ids: set[uuid.UUID] = set()
         merged_count = 0
         accounts_data = await provider.get_accounts(credentials)
         for acc_data in accounts_data:
@@ -1395,7 +1403,7 @@ async def sync_connection(
             # Fetch the bills feed before transactions so transaction → bill
             # FK resolution happens in-memory (no N+1). Empty dict for non-CC
             # accounts or providers without /bills.
-            bills_by_external_id = await _sync_credit_card_bills(
+            bills_by_external_id, provider_bill_ids = await _sync_credit_card_bills(
                 session, user_id, account, provider, credentials
             )
 
@@ -1435,6 +1443,7 @@ async def sync_connection(
                         transactions_data = reconciliation_snapshot
                         if reconciliation_snapshot is not None:
                             reconciled_accounts.append(account)
+                            reconciled_bill_ids.update(provider_bill_ids)
                     else:
                         logger.warning(
                             "Ignoring invalid bill reconciliation snapshot from %s "
@@ -1639,7 +1648,7 @@ async def sync_connection(
         await _cleanup_phantom_duplicates(session, connection.id)
 
         await _log_bill_reconciliation_differences(
-            session, {account.id for account in reconciled_accounts}
+            session, reconciled_bill_ids
         )
         reconciled_at = datetime.now(timezone.utc)
         for account in reconciled_accounts:
