@@ -90,6 +90,22 @@ class Transaction(Base):
         nullable=True,
         index=True,
     )
+    # Provider-observed bill membership, kept separate from `bill_id` because
+    # the latter may be intentionally moved by a manual cycle override. This
+    # lets reconciliation audit provider truth while all user-facing queries
+    # continue honoring `bill_id` / `effective_bill_date`.
+    provider_bill_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("credit_card_bills.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # True once the provider has explicitly supplied bill membership, including
+    # an authoritative null. A null provider_bill_id with this flag false means
+    # "not observed yet" and must not erase trustworthy legacy/local linkage.
+    provider_bill_membership_known: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
     # Flag to exclude this transaction from reports and dashboard aggregations.
     # When set to True, the transaction is ignored for income/expense calculations.
     is_ignored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
@@ -107,7 +123,10 @@ class Transaction(Base):
 
     account: Mapped["Account"] = relationship(back_populates="transactions")
     category: Mapped[Optional["Category"]] = relationship()
-    bill: Mapped[Optional["CreditCardBill"]] = relationship()
+    bill: Mapped[Optional["CreditCardBill"]] = relationship(foreign_keys=[bill_id])
+    provider_bill: Mapped[Optional["CreditCardBill"]] = relationship(
+        foreign_keys=[provider_bill_id]
+    )
     payee_entity: Mapped[Optional["Payee"]] = relationship(back_populates="transactions")
     recurring_transaction: Mapped[Optional["RecurringTransaction"]] = relationship(
         back_populates="transactions"

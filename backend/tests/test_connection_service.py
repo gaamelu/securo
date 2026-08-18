@@ -1369,8 +1369,205 @@ async def test_sync_links_transaction_to_matching_bill(
         select(Transaction).where(Transaction.external_id == "tx-linked")
     )).scalar_one()
     assert tx_row.bill_id == bill_row.id
+    assert tx_row.provider_bill_id == bill_row.id
+    assert tx_row.provider_bill_membership_known is True
     # Bank-truth date wins over local cycle math.
     assert tx_row.effective_date == date(2026, 5, 10)
+
+
+@pytest.mark.asyncio
+async def test_sync_keeps_unresolved_provider_bill_membership_unknown(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """A non-null provider bill id is not authoritative until it resolves."""
+    conn = await _make_connection(session, test_user.id, "Unresolved Bill Bank")
+    known_bill = BillData(
+        external_id="bill-known",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("0"),
+        currency="BRL",
+    )
+    unresolved = TransactionData(
+        external_id="tx-unresolved-bill",
+        description="UNRESOLVED BILL LINE",
+        amount=Decimal("25.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-missing-from-snapshot",
+        bill_membership_authoritative=True,
+    )
+    provider = _cc_provider_mock(bills=[known_bill], transactions=[unresolved])
+
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    row = (await session.execute(
+        select(Transaction).where(Transaction.external_id == "tx-unresolved-bill")
+    )).scalar_one()
+    assert row.bill_id is None
+    assert row.provider_bill_id is None
+    assert row.provider_bill_membership_known is False
+
+
+@pytest.mark.asyncio
+async def test_sync_clears_stale_provider_bill_when_new_membership_is_unresolved(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """An authoritative unresolved bill id must not retain an older bill."""
+    from app.models.credit_card_bill import CreditCardBill
+
+    conn = await _make_connection(session, test_user.id, "Moved Bill Bank")
+    bill_a = BillData(
+        external_id="bill-a",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("25.00"),
+        currency="BRL",
+    )
+    historical_bill_b = BillData(
+        external_id="bill-b",
+        due_date=date(2026, 6, 10),
+        total_amount=Decimal("25.00"),
+        currency="BRL",
+    )
+    txn_a = TransactionData(
+        external_id="tx-moved-bill",
+        description="MOVED BILL LINE",
+        amount=Decimal("25.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-a",
+        bill_membership_authoritative=True,
+    )
+    provider = _cc_provider_mock(
+        bills=[bill_a, historical_bill_b], transactions=[txn_a]
+    )
+    p1, p2, p3 = _patch_sync_helpers()
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    bill_a_row = (await session.execute(
+        select(CreditCardBill).where(CreditCardBill.external_id == "bill-a")
+    )).scalar_one()
+    row = (await session.execute(
+        select(Transaction).where(Transaction.external_id == "tx-moved-bill")
+    )).scalar_one()
+    assert row.provider_bill_id == bill_a_row.id
+    assert row.bill_id == bill_a_row.id
+
+    txn_b_unresolved = TransactionData(
+        external_id="tx-moved-bill",
+        description="MOVED BILL LINE",
+        amount=Decimal("25.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-b",
+        bill_membership_authoritative=True,
+    )
+    provider.get_bills = AsyncMock(return_value=[bill_a])
+    provider.get_bill_reconciliation_transactions = AsyncMock(
+        return_value=[txn_b_unresolved]
+    )
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session,
+            conn.id,
+            test_workspace.id,
+            test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    row = (await session.execute(
+        select(Transaction).where(Transaction.external_id == "tx-moved-bill")
+    )).scalar_one()
+    assert row.provider_bill_id is None
+    assert row.provider_bill_membership_known is False
+    assert row.bill_id is None
+
+
+@pytest.mark.asyncio
+async def test_sync_preserves_same_historical_provider_bill_membership(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """A historical bill absent today remains valid when membership is unchanged."""
+    from app.models.credit_card_bill import CreditCardBill
+
+    conn = await _make_connection(session, test_user.id, "Historical Bill Bank")
+    historical_bill = BillData(
+        external_id="bill-historical",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("25.00"),
+        currency="BRL",
+    )
+    txn = TransactionData(
+        external_id="tx-historical-bill",
+        description="HISTORICAL BILL LINE",
+        amount=Decimal("25.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-historical",
+        bill_membership_authoritative=True,
+    )
+    provider = _cc_provider_mock(bills=[historical_bill], transactions=[txn])
+    p1, p2, p3 = _patch_sync_helpers()
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    bill_row = (await session.execute(
+        select(CreditCardBill).where(
+            CreditCardBill.external_id == "bill-historical"
+        )
+    )).scalar_one()
+    row = (await session.execute(
+        select(Transaction).where(
+            Transaction.external_id == "tx-historical-bill"
+        )
+    )).scalar_one()
+    assert row.provider_bill_id == bill_row.id
+    assert row.bill_id == bill_row.id
+
+    current_bill = BillData(
+        external_id="bill-current",
+        due_date=date(2026, 6, 10),
+        total_amount=Decimal("0"),
+        currency="BRL",
+    )
+    provider.get_bills = AsyncMock(return_value=[current_bill])
+    provider.get_bill_reconciliation_transactions = AsyncMock(return_value=[txn])
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session,
+            conn.id,
+            test_workspace.id,
+            test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    row = (await session.execute(
+        select(Transaction).where(
+            Transaction.external_id == "tx-historical-bill"
+        )
+    )).scalar_one()
+    assert row.provider_bill_id == bill_row.id
+    assert row.provider_bill_membership_known is True
+    assert row.bill_id == bill_row.id
 
 
 @pytest.mark.asyncio
@@ -1662,19 +1859,20 @@ async def test_sync_reconciles_existing_card_when_bills_appear_later_same_day(
          p1, p2, p3:
         await sync_connection(session, conn.id, test_workspace.id, test_user.id)
 
-    provider.get_bill_reconciliation_transactions.assert_not_awaited()
+    provider.get_bill_reconciliation_transactions.assert_awaited_once()
     account = (await session.execute(
         select(Account).where(Account.connection_id == conn.id)
     )).scalar_one()
     assert account.last_bill_reconciliation_at is None
 
     provider.get_bills = AsyncMock(return_value=[bill])
+    provider.get_bill_reconciliation_transactions.reset_mock()
     with patch("app.services.connection_service.get_provider", return_value=provider), \
          p1, p2, p3:
         await sync_connection(session, conn.id, test_workspace.id, test_user.id)
 
     provider.get_bill_reconciliation_transactions.assert_awaited_once()
-    assert provider.get_transactions.await_count == 1
+    assert provider.get_transactions.await_count == 0
     row = (await session.execute(
         select(Transaction).where(Transaction.external_id == "tx-new-card-old")
     )).scalar_one()
@@ -1895,6 +2093,243 @@ async def test_sync_bill_difference_ignores_rounding_and_local_bills(
 
 
 @pytest.mark.asyncio
+async def test_sync_bill_difference_counts_manual_compensation(
+    session: AsyncSession, test_user, test_workspace, caplog,
+):
+    """Manual line items may complete a provider bill without hiding provenance."""
+    from app.models.credit_card_bill import CreditCardBill
+
+    conn = await _make_connection(session, test_user.id, "Manual Total Bank")
+    account = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        connection_id=conn.id,
+        external_id="cc-acc-1",
+        name="Credit Card",
+        type="credit_card",
+        balance=Decimal("0"),
+        currency="BRL",
+    )
+    session.add(account)
+    await session.commit()
+
+    provider_bill = BillData(
+        external_id="bill-manual-total",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("100.00"),
+        currency="BRL",
+    )
+    provider_line = TransactionData(
+        external_id="tx-provider-80",
+        description="PROVIDER LINE",
+        amount=Decimal("80.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-manual-total",
+    )
+    provider = _cc_provider_mock(bills=[provider_bill], transactions=[])
+    provider.get_bill_reconciliation_transactions = AsyncMock(
+        return_value=[provider_line]
+    )
+
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session, conn.id, test_workspace.id, test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    bill_row = (await session.execute(
+        select(CreditCardBill).where(
+            CreditCardBill.external_id == "bill-manual-total"
+        )
+    )).scalar_one()
+    manual = Transaction(
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        account_id=account.id,
+        description="MANUAL COMPENSATION",
+        amount=Decimal("20.00"),
+        currency="BRL",
+        date=date(2026, 4, 21),
+        effective_date=bill_row.due_date,
+        type="debit",
+        source="manual",
+        status="posted",
+        bill_id=bill_row.id,
+    )
+    session.add(manual)
+    await session.commit()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.services.connection_service"), \
+         patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session, conn.id, test_workspace.id, test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    assert "bill-manual-total" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_sync_bill_difference_falls_back_for_unknown_legacy_membership(
+    session: AsyncSession, test_user, test_workspace, caplog,
+):
+    """Unknown provider membership must not discard trustworthy legacy linkage."""
+    from app.models.credit_card_bill import CreditCardBill
+
+    conn = await _make_connection(session, test_user.id, "Legacy Total Bank")
+    provider_bill = BillData(
+        external_id="bill-legacy-total",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("100.00"),
+        currency="BRL",
+    )
+    provider_line = TransactionData(
+        external_id="tx-provider-legacy-80",
+        description="PROVIDER LINE",
+        amount=Decimal("80.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-legacy-total",
+    )
+    provider = _cc_provider_mock(bills=[provider_bill], transactions=[])
+    provider.get_bill_reconciliation_transactions = AsyncMock(
+        return_value=[provider_line]
+    )
+
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session, conn.id, test_workspace.id, test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    bill_row = (await session.execute(
+        select(CreditCardBill).where(
+            CreditCardBill.external_id == "bill-legacy-total"
+        )
+    )).scalar_one()
+    account = (await session.execute(
+        select(Account).where(Account.connection_id == conn.id)
+    )).scalar_one()
+    session.add(Transaction(
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        account_id=account.id,
+        external_id="legacy-sync-unknown-membership",
+        description="LEGACY PROVIDER LINE",
+        amount=Decimal("20.00"),
+        currency="BRL",
+        date=date(2026, 4, 21),
+        effective_date=bill_row.due_date,
+        type="debit",
+        source="sync",
+        status="posted",
+        bill_id=bill_row.id,
+        provider_bill_id=None,
+        provider_bill_membership_known=False,
+    ))
+    await session.commit()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.services.connection_service"), \
+         patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session, conn.id, test_workspace.id, test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    assert "bill-legacy-total" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_sync_bill_difference_honors_authoritative_null_membership(
+    session: AsyncSession, test_user, test_workspace, caplog,
+):
+    """A known provider null must not fall back to a stale user-facing bill."""
+    from app.models.credit_card_bill import CreditCardBill
+
+    conn = await _make_connection(session, test_user.id, "Null Total Bank")
+    provider_bill = BillData(
+        external_id="bill-null-total",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("80.00"),
+        currency="BRL",
+    )
+    provider_line = TransactionData(
+        external_id="tx-provider-null-80",
+        description="PROVIDER LINE",
+        amount=Decimal("80.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-null-total",
+    )
+    provider = _cc_provider_mock(bills=[provider_bill], transactions=[])
+    provider.get_bill_reconciliation_transactions = AsyncMock(
+        return_value=[provider_line]
+    )
+
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session, conn.id, test_workspace.id, test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    bill_row = (await session.execute(
+        select(CreditCardBill).where(
+            CreditCardBill.external_id == "bill-null-total"
+        )
+    )).scalar_one()
+    account = (await session.execute(
+        select(Account).where(Account.connection_id == conn.id)
+    )).scalar_one()
+    session.add(Transaction(
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        account_id=account.id,
+        external_id="provider-authoritative-null",
+        description="NOT IN THIS BILL",
+        amount=Decimal("20.00"),
+        currency="BRL",
+        date=date(2026, 4, 21),
+        effective_date=bill_row.due_date,
+        type="debit",
+        source="sync",
+        status="posted",
+        bill_id=bill_row.id,
+        provider_bill_id=None,
+        provider_bill_membership_known=True,
+    ))
+    await session.commit()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.services.connection_service"), \
+         patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session, conn.id, test_workspace.id, test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    assert "bill-null-total" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_sync_fuzzy_manual_merge_applies_provider_bill_link(
     session: AsyncSession, test_user, test_workspace,
 ):
@@ -2020,11 +2455,10 @@ async def test_sync_falls_back_to_cycle_math_when_bill_missing(
 
 
 @pytest.mark.asyncio
-async def test_sync_swallows_get_bills_error(
+async def test_sync_falls_back_when_bills_snapshot_is_temporarily_unavailable(
     session: AsyncSession, test_user, test_workspace,
 ):
-    """Non-regulado Pluggy connections 4xx on /bills. Sync must keep going
-    and persist transactions via the cycle-math fallback."""
+    """A typed temporary bills failure safely falls back to cycle math."""
     conn = await _make_connection(session, test_user.id, "Err Bank")
     txn = TransactionData(
         external_id="tx-after-bills-fail",
@@ -2036,7 +2470,7 @@ async def test_sync_swallows_get_bills_error(
     )
     mock_provider = _cc_provider_mock(
         bills=[], transactions=[txn],
-        bills_side_effect=RuntimeError("403 Forbidden"),
+        bills_side_effect=BillReconciliationUnavailable("temporary outage"),
     )
 
     p1, p2, p3 = _patch_sync_helpers()
@@ -2049,6 +2483,195 @@ async def test_sync_swallows_get_bills_error(
         select(Transaction).where(Transaction.external_id == "tx-after-bills-fail")
     )).scalar_one()
     assert tx_row.bill_id is None
+
+
+@pytest.mark.asyncio
+async def test_transient_bills_failure_preserves_existing_provider_membership(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """No successful bills snapshot means no evidence to unlink a row."""
+    from app.models.credit_card_bill import CreditCardBill
+
+    conn = await _make_connection(session, test_user.id, "Fallback Membership Bank")
+    bill = BillData(
+        external_id="bill-before-outage",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("10.00"),
+        currency="BRL",
+    )
+    txn = TransactionData(
+        external_id="tx-before-outage",
+        description="PRESERVE DURING OUTAGE",
+        amount=Decimal("10.00"),
+        date=date(2026, 4, 5),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-before-outage",
+        bill_membership_authoritative=True,
+    )
+    provider = _cc_provider_mock(bills=[bill], transactions=[txn])
+    p1, p2, p3 = _patch_sync_helpers()
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    bill_row = (await session.execute(
+        select(CreditCardBill).where(
+            CreditCardBill.external_id == "bill-before-outage"
+        )
+    )).scalar_one()
+    row = (await session.execute(
+        select(Transaction).where(Transaction.external_id == "tx-before-outage")
+    )).scalar_one()
+    assert row.provider_bill_id == bill_row.id
+    assert row.bill_id == bill_row.id
+
+    provider.get_bills = AsyncMock(
+        side_effect=BillReconciliationUnavailable("temporary outage")
+    )
+    txn_during_outage = TransactionData(
+        external_id="tx-before-outage",
+        description="PRESERVE DURING OUTAGE",
+        amount=Decimal("10.00"),
+        date=date(2026, 4, 5),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-reported-only-during-outage",
+        bill_membership_authoritative=True,
+    )
+    provider.get_transactions = AsyncMock(return_value=[txn_during_outage])
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session,
+            conn.id,
+            test_workspace.id,
+            test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    row = (await session.execute(
+        select(Transaction).where(Transaction.external_id == "tx-before-outage")
+    )).scalar_one()
+    assert row.provider_bill_id == bill_row.id
+    assert row.provider_bill_membership_known is True
+    assert row.bill_id == bill_row.id
+
+
+@pytest.mark.asyncio
+async def test_successful_empty_bills_response_still_reconciles_transactions(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """A valid empty bills snapshot is authoritative, not an outage."""
+    conn = await _make_connection(session, test_user.id, "Empty Bills Bank")
+    bill = BillData(
+        external_id="bill-before-empty",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("10.00"),
+        currency="BRL",
+    )
+    linked_txn = TransactionData(
+        external_id="tx-before-empty",
+        description="REMOVED FROM BILL",
+        amount=Decimal("10.00"),
+        date=date(2026, 4, 5),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-before-empty",
+        bill_membership_authoritative=True,
+    )
+    provider = _cc_provider_mock(bills=[bill], transactions=[linked_txn])
+    p1, p2, p3 = _patch_sync_helpers()
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    unlinked_txn = TransactionData(
+        external_id="tx-before-empty",
+        description="REMOVED FROM BILL",
+        amount=Decimal("10.00"),
+        date=date(2026, 4, 5),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id=None,
+        bill_membership_authoritative=True,
+    )
+    provider.get_bills = AsyncMock(return_value=[])
+    provider.get_transactions = AsyncMock(return_value=[])
+    provider.get_bill_reconciliation_transactions = AsyncMock(
+        return_value=[unlinked_txn]
+    )
+
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session,
+            conn.id,
+            test_workspace.id,
+            test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    provider.get_bill_reconciliation_transactions.assert_awaited_once()
+    account = (await session.execute(
+        select(Account).where(Account.connection_id == conn.id)
+    )).scalar_one()
+    assert account.last_bill_reconciliation_at is None
+    row = (await session.execute(
+        select(Transaction).where(Transaction.external_id == "tx-before-empty")
+    )).scalar_one()
+    assert row.provider_bill_id is None
+    assert row.provider_bill_membership_known is True
+    assert row.bill_id is None
+
+
+@pytest.mark.asyncio
+async def test_sync_does_not_hide_bills_authentication_failure(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """An authentication failure from /bills follows the reconnect path."""
+    conn = await _make_connection(session, test_user.id, "Expired Bills Bank")
+    provider = _cc_provider_mock(
+        bills=[], transactions=[],
+        bills_side_effect=SessionExpiredError("expired"),
+    )
+
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3, pytest.raises(SessionExpiredError):
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    await session.refresh(conn)
+    assert conn.status == "expired"
+    provider.get_transactions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_does_not_hide_unexpected_bills_failure(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Malformed payloads and programming errors remain visible and retryable."""
+    conn = await _make_connection(session, test_user.id, "Broken Bills Bank")
+    provider = _cc_provider_mock(
+        bills=[], transactions=[],
+        bills_side_effect=RuntimeError("broken parser"),
+    )
+
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3, pytest.raises(RuntimeError, match="broken parser"):
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    await session.refresh(conn)
+    assert conn.status == "error"
+    provider.get_transactions.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2222,6 +2845,7 @@ async def test_sync_clears_bill_link_when_provider_authoritatively_unassigns_it(
         select(Transaction).where(Transaction.external_id == "tx-unassign")
     )).scalar_one()
     assert before.bill_id is not None
+    assert before.provider_bill_id == before.bill_id
 
     unassigned = TransactionData(
         external_id="tx-unassign",
@@ -2251,6 +2875,8 @@ async def test_sync_clears_bill_link_when_provider_authoritatively_unassigns_it(
         select(Transaction).where(Transaction.external_id == "tx-unassign")
     )).scalar_one()
     assert after.bill_id is None
+    assert after.provider_bill_id is None
+    assert after.provider_bill_membership_known is True
     assert after.effective_date == after.date
 
 
@@ -2306,6 +2932,8 @@ async def test_sync_preserves_bill_link_when_provider_membership_is_omitted(
         select(Transaction).where(Transaction.external_id == "tx-sparse")
     )).scalar_one()
     assert after.bill_id is not None
+    assert after.provider_bill_id == after.bill_id
+    assert after.provider_bill_membership_known is True
     assert after.effective_date == bill.due_date
 
 
@@ -2584,8 +3212,188 @@ async def test_sync_removes_orphaned_finance_charges_on_resync(
 
 
 @pytest.mark.asyncio
-async def test_sync_does_not_overwrite_manual_effective_bill_date(
+async def test_sync_removes_last_finance_charge_on_explicit_empty_list(
     session: AsyncSession, test_user, test_workspace,
+):
+    """An authoritative empty financeCharges list removes stale synthetic rows."""
+    conn = await _make_connection(session, test_user.id, "EmptyFC")
+    bill_v1 = BillData(
+        external_id="bill-empty-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("10"),
+        currency="BRL",
+        raw_data={
+            "financeCharges": [
+                {"id": "fc-last", "type": "IOF", "amount": 1, "additionalInfo": "IOF"},
+            ],
+        },
+    )
+    provider = _cc_provider_mock(bills=[bill_v1], transactions=[])
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    bill_v2 = BillData(
+        external_id="bill-empty-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("9"),
+        currency="BRL",
+        raw_data={"financeCharges": []},
+    )
+    provider.get_bills = AsyncMock(return_value=[bill_v2])
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    rows = (await session.execute(
+        select(Transaction).where(
+            Transaction.external_id == "bill_charge:bill-empty-fc:fc-last"
+        )
+    )).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_sync_freezes_ignored_finance_charge(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Ignored synthetic charges survive provider updates and disappearance."""
+    conn = await _make_connection(session, test_user.id, "IgnoredFC")
+    bill_v1 = BillData(
+        external_id="bill-ignored-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("10"),
+        currency="BRL",
+        raw_data={
+            "financeCharges": [
+                {"id": "fc-user", "type": "IOF", "amount": 1, "additionalInfo": "IOF"},
+            ],
+        },
+    )
+    provider = _cc_provider_mock(bills=[bill_v1], transactions=[])
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    row = (await session.execute(
+        select(Transaction).where(
+            Transaction.external_id == "bill_charge:bill-ignored-fc:fc-user"
+        )
+    )).scalar_one()
+    row.is_ignored = True
+    row.description = "User preserved description"
+    row.amount = Decimal("7.77")
+    await session.commit()
+
+    bill_v2 = BillData(
+        external_id="bill-ignored-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("20"),
+        currency="BRL",
+        raw_data={
+            "financeCharges": [
+                {"id": "fc-user", "type": "IOF", "amount": 2, "additionalInfo": "Changed"},
+            ],
+        },
+    )
+    provider.get_bills = AsyncMock(return_value=[bill_v2])
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    await session.refresh(row)
+    assert row.description == "User preserved description"
+    assert row.amount == Decimal("7.77")
+
+    bill_v3 = BillData(
+        external_id="bill-ignored-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("18"),
+        currency="BRL",
+        raw_data={"financeCharges": []},
+    )
+    provider.get_bills = AsyncMock(return_value=[bill_v3])
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    assert await session.get(Transaction, row.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_sync_preserves_finance_charge_bill_override(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Provider refreshes never move or delete a user-overridden charge."""
+    conn = await _make_connection(session, test_user.id, "OverrideFC")
+    bill_v1 = BillData(
+        external_id="bill-override-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("10"),
+        currency="BRL",
+        raw_data={
+            "financeCharges": [
+                {"id": "fc-moved", "type": "IOF", "amount": 1, "additionalInfo": "IOF"},
+            ],
+        },
+    )
+    provider = _cc_provider_mock(bills=[bill_v1], transactions=[])
+    p1, p2, p3 = _patch_sync_helpers()
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    row = (await session.execute(
+        select(Transaction).where(
+            Transaction.external_id == "bill_charge:bill-override-fc:fc-moved"
+        )
+    )).scalar_one()
+    row.effective_bill_date = date(2026, 5, 15)
+    row.effective_date = date(2026, 5, 15)
+    row.bill_id = None
+    await session.commit()
+
+    bill_v2 = BillData(
+        external_id="bill-override-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("20"),
+        currency="BRL",
+        raw_data={
+            "financeCharges": [
+                {"id": "fc-moved", "type": "IOF", "amount": 2, "additionalInfo": "Changed"},
+            ],
+        },
+    )
+    provider.get_bills = AsyncMock(return_value=[bill_v2])
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    await session.refresh(row)
+    assert row.effective_bill_date == date(2026, 5, 15)
+    assert row.effective_date == date(2026, 5, 15)
+    assert row.bill_id is None
+
+    bill_v3 = BillData(
+        external_id="bill-override-fc",
+        due_date=date(2026, 4, 15),
+        total_amount=Decimal("18"),
+        currency="BRL",
+        raw_data={"financeCharges": []},
+    )
+    provider.get_bills = AsyncMock(return_value=[bill_v3])
+    with patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    assert await session.get(Transaction, row.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_sync_does_not_overwrite_manual_effective_bill_date(
+    session: AsyncSession, test_user, test_workspace, caplog,
 ):
     """When the user has manually set effective_bill_date on a tx, the next
     sync must NOT relink bill_id or recompute effective_date — the user is
@@ -2596,7 +3404,7 @@ async def test_sync_does_not_overwrite_manual_effective_bill_date(
 
     bill_a = BillData(
         external_id="bill-A", due_date=_date_(2026, 4, 5),
-        total_amount=Decimal("100"), currency="BRL",
+        total_amount=Decimal("50"), currency="BRL",
     )
     txn = TransactionData(
         external_id="tx-overridden",
@@ -2626,7 +3434,9 @@ async def test_sync_does_not_overwrite_manual_effective_bill_date(
 
     # Re-sync — provider still says bill A. Override must be preserved.
     mock_provider.get_bill_reconciliation_transactions = AsyncMock(return_value=[txn])
-    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.services.connection_service"), \
+         patch("app.services.connection_service.get_provider", return_value=mock_provider), \
          p1, p2, p3:
         await sync_connection(
             session,
@@ -2641,8 +3451,11 @@ async def test_sync_does_not_overwrite_manual_effective_bill_date(
     )).scalar_one()
     assert tx_row.effective_bill_date == _date_(2026, 5, 5)
     assert tx_row.bill_id is None  # not re-linked to A
+    assert tx_row.provider_bill_id == bill_a_row_id
+    assert tx_row.provider_bill_membership_known is True
     assert tx_row.effective_date == _date_(2026, 5, 5)
     assert bill_a_row_id is not None  # sanity: A had been linked initially
+    assert "bill-A" not in caplog.text
 
 
 @pytest.mark.asyncio
