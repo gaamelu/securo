@@ -595,6 +595,8 @@
     "currentTag": "agora",
     "overdueDays": "Atrasado há {{count}} dias",
     "dueIn": "Vence em {{count}} dias",
+    "previousMonths": "Meses anteriores",
+    "nextMonths": "Próximos meses",
     "dueToday": "Vence hoje",
     "overdue": "Atrasado",
     "cycleMissing": "Configurar ciclo",

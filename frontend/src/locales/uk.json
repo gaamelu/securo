@@ -601,6 +601,8 @@
     "currentTag": "зараз",
     "overdueDays": "Прострочено на {{count}} днів",
     "dueIn": "Залишилось {{count}} днів",
+    "previousMonths": "Попередні місяці",
+    "nextMonths": "Наступні місяці",
     "dueToday": "Сьогодні",
     "overdue": "Прострочено",
     "cycleMissing": "Налаштувати цикл",

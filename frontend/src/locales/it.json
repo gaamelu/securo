@@ -595,6 +595,8 @@
     "currentTag": "ora",
     "overdueDays": "In ritardo di {{count}} giorni",
     "dueIn": "Scade tra {{count}} giorni",
+    "previousMonths": "Mesi precedenti",
+    "nextMonths": "Mesi successivi",
     "dueToday": "Scade oggi",
     "overdue": "Scaduto",
     "cycleMissing": "Configura ciclo",

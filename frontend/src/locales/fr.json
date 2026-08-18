@@ -595,6 +595,8 @@
     "currentTag": "actuel",
     "overdueDays": "En retard de {{count}} jours",
     "dueIn": "Échéance dans {{count}} jours",
+    "previousMonths": "Mois précédents",
+    "nextMonths": "Mois suivants",
     "dueToday": "Échéance aujourd'hui",
     "overdue": "En retard",
     "cycleMissing": "Configurer le cycle",

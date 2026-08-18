@@ -595,6 +595,8 @@
     "currentTag": "jetzt",
     "overdueDays": "Seit {{count}} Tagen überfällig",
     "dueIn": "Fällig in {{count}} Tagen",
+    "previousMonths": "Vorherige Monate",
+    "nextMonths": "Nächste Monate",
     "dueToday": "Heute fällig",
     "overdue": "Überfällig",
     "cycleMissing": "Abrechnungszyklus einrichten",
