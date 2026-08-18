@@ -39,5 +39,14 @@ class Category(Base):
     # for income/expense calculations.
     is_ignored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
+    # Insights classification (Passo 1 — additive only, nothing reads these
+    # yet). What this category's money does: 'income', 'consumption',
+    # 'saving', or 'transfer'. Null until a classification pass assigns one.
+    flow_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Default expense nature for transactions in this category: 'fixed',
+    # 'variable', or 'discretionary'. Null until classified. Individual
+    # transactions may override this via `Transaction.expense_nature`.
+    expense_nature: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
     user: Mapped["User"] = relationship(back_populates="categories")
     group: Mapped[Optional["CategoryGroup"]] = relationship(back_populates="categories")
