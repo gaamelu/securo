@@ -1923,6 +1923,74 @@ async def test_sync_bill_difference_ignores_pending_lines(
 
 
 @pytest.mark.asyncio
+async def test_sync_bill_difference_ignores_rounding_and_local_bills(
+    session: AsyncSession, test_user, test_workspace, caplog,
+):
+    """Only provider-returned bills with material differences are audited."""
+    from app.models.credit_card_bill import CreditCardBill
+
+    conn = await _make_connection(session, test_user.id, "Scoped Total Bank")
+    account = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        connection_id=conn.id,
+        external_id="cc-acc-1",
+        name="Credit Card",
+        type="credit_card",
+        balance=Decimal("0"),
+        currency="BRL",
+    )
+    manual_bill = CreditCardBill(
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        account_id=account.id,
+        external_id="manual-projection",
+        due_date=date(2026, 6, 10),
+        total_amount=Decimal("999.00"),
+        currency="BRL",
+    )
+    session.add_all([account, manual_bill])
+    await session.commit()
+
+    provider_bill = BillData(
+        external_id="bill-rounding",
+        due_date=date(2026, 5, 10),
+        total_amount=Decimal("80.02"),
+        currency="BRL",
+    )
+    posted = TransactionData(
+        external_id="tx-rounding",
+        description="POSTED LINE",
+        amount=Decimal("80.00"),
+        date=date(2026, 4, 20),
+        type="debit",
+        currency="BRL",
+        status="posted",
+        bill_external_id="bill-rounding",
+    )
+    provider = _cc_provider_mock(bills=[provider_bill], transactions=[])
+    provider.get_bill_reconciliation_transactions = AsyncMock(
+        return_value=[posted]
+    )
+
+    p1, p2, p3 = _patch_sync_helpers()
+    with caplog.at_level(logging.WARNING, logger="app.services.connection_service"), \
+         patch("app.services.connection_service.get_provider", return_value=provider), \
+         p1, p2, p3:
+        await sync_connection(
+            session,
+            conn.id,
+            test_workspace.id,
+            test_user.id,
+            trigger_provider_refresh=True,
+        )
+
+    assert "bill-rounding" not in caplog.text
+    assert "manual-projection" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_sync_fuzzy_manual_merge_applies_provider_bill_link(
     session: AsyncSession, test_user, test_workspace,
 ):
