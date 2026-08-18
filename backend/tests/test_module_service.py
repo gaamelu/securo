@@ -28,6 +28,7 @@ PERSONAL_MODULES = [
     "categories",
     "goals",
     "import",
+    "insights",
     "payees",
     "recurring",
     "reports",
