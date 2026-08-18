@@ -13,10 +13,13 @@ from app.providers.base import (
     AccountData,
     BankProvider,
     BillData,
+    BillReconciliationUnavailable,
     ConnectionData,
     ConnectTokenData,
     HoldingData,
+    ProviderRateLimited,
     RefreshOutcome,
+    SessionExpiredError,
     TransactionData,
     mask_last4,
 )
@@ -483,6 +486,7 @@ class PluggyProvider(BankProvider):
                     bill_external_id = (
                         str(bill_external_id_raw) if bill_external_id_raw else None
                     )
+                    bill_membership_authoritative = "billId" in cc_meta
 
                     all_transactions.append(
                         TransactionData(
@@ -502,6 +506,7 @@ class PluggyProvider(BankProvider):
                             installment_total_amount=inst_total_amount_dec,
                             installment_purchase_date=inst_purchase_date,
                             bill_external_id=bill_external_id,
+                            bill_membership_authoritative=bill_membership_authoritative,
                         )
                     )
 
@@ -701,6 +706,45 @@ class PluggyProvider(BankProvider):
                 page += 1
 
         return bills
+
+    async def get_bill_reconciliation_transactions(
+        self,
+        credentials: dict,
+        account_external_id: str,
+        payee_source: str = "auto",
+    ) -> Optional[list[TransactionData]]:
+        """Return Pluggy's complete cached transaction snapshot for a card.
+
+        ``billId`` can be attached after a transaction falls outside Securo's
+        ordinary incremental rewind. Reading the full cursor-paginated feed
+        whenever /bills succeeds lets polling converge without a webhook.
+        """
+        try:
+            return await self.get_transactions(
+                credentials,
+                account_external_id,
+                None,
+                payee_source=payee_source,
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in (401, 403):
+                raise SessionExpiredError(
+                    f"Pluggy rejected the bill reconciliation snapshot ({status_code})"
+                ) from exc
+            if status_code == 429:
+                raise ProviderRateLimited(
+                    "Pluggy rate-limited the bill reconciliation snapshot"
+                ) from exc
+            if status_code >= 500:
+                raise BillReconciliationUnavailable(
+                    f"Pluggy bill reconciliation snapshot returned {status_code}"
+                ) from exc
+            raise
+        except httpx.TransportError as exc:
+            raise BillReconciliationUnavailable(
+                "Pluggy bill reconciliation snapshot transport failed"
+            ) from exc
 
     @staticmethod
     def _extract_payee(txn: dict, txn_type: str, payee_source: str = "auto") -> Optional[str]:

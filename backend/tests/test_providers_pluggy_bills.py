@@ -354,3 +354,36 @@ async def test_default_get_bills_returns_empty_list():
             return credentials
 
     assert await StubProvider().get_bills({}, "acc") == []
+
+
+@pytest.mark.asyncio
+async def test_default_bill_reconciliation_transactions_is_unsupported():
+    """Providers opt into complete bill reconciliation explicitly.
+
+    ``None`` is distinct from an authoritative empty snapshot (``[]``), so
+    existing providers keep their incremental transaction path unchanged.
+    """
+    from app.providers.base import BankProvider
+
+    class StubProvider(BankProvider):
+        @property
+        def name(self) -> str:
+            return "stub"
+
+        async def get_oauth_url(self, redirect_uri: str, state: str, flow_params: dict | None = None) -> str:
+            return ""
+
+        async def handle_oauth_callback(self, code):
+            raise NotImplementedError
+
+        async def get_accounts(self, credentials):
+            return []
+
+        async def get_transactions(self, credentials, account_external_id, since=None, payee_source="auto"):
+            return []
+
+        async def refresh_credentials(self, credentials):
+            return credentials
+
+    result = await StubProvider().get_bill_reconciliation_transactions({}, "acc")
+    assert result is None

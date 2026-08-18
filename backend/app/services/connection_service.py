@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from sqlalchemy import delete, exists, or_, select, update
+from sqlalchemy import case, delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,15 +21,18 @@ from app.models.transaction import Transaction
 from app.models.user import User
 from app.providers import get_provider
 from app.providers.base import (
+    BillReconciliationUnavailable,
     HoldingData,
     ProviderNotConfiguredError,
     ProviderRateLimited,
     ProviderUserActionRequired,
     SessionExpiredError,
+    TransactionData,
 )
 from app.services import oauth_state
 from app.services import admin_service
 from app.services import recurring_match_service
+from app.services._query_filters import counts_as_pnl
 from app.services.account_service import (
     _simplefin_to_internal_balance,
     sync_opening_balance_for_connected_account,
@@ -387,6 +390,30 @@ async def get_connection(
         select(BankConnection)
         .where(BankConnection.id == connection_id, BankConnection.workspace_id == workspace_id)
         .options(selectinload(BankConnection.accounts))
+    )
+    return result.scalar_one_or_none()
+
+
+def _connection_sync_lock_statement(
+    connection_id: uuid.UUID, workspace_id: uuid.UUID
+):
+    """Build the row-locking lookup that serializes one connection's syncs."""
+    return (
+        select(BankConnection)
+        .where(
+            BankConnection.id == connection_id,
+            BankConnection.workspace_id == workspace_id,
+        )
+        .with_for_update()
+    )
+
+
+async def _get_connection_for_sync(
+    session: AsyncSession, connection_id: uuid.UUID, workspace_id: uuid.UUID
+) -> Optional[BankConnection]:
+    """Lock a connection row until commit so concurrent syncs cannot race."""
+    result = await session.execute(
+        _connection_sync_lock_statement(connection_id, workspace_id)
     )
     return result.scalar_one_or_none()
 
@@ -838,6 +865,29 @@ async def _find_synced_duplicate(
     return None
 
 
+def _apply_provider_bill_link(
+    transaction: Transaction,
+    txn_data: TransactionData,
+    account: Account,
+    bills_by_external_id: dict[str, CreditCardBill],
+) -> None:
+    """Apply provider bill truth without overriding an explicit user choice."""
+    if transaction.is_ignored or transaction.effective_bill_date is not None:
+        return
+    if not txn_data.bill_external_id:
+        if txn_data.bill_membership_authoritative and transaction.bill_id is not None:
+            transaction.bill_id = None
+            apply_effective_date(transaction, account)
+        return
+
+    bill = bills_by_external_id.get(txn_data.bill_external_id)
+    if bill is None or transaction.bill_id == bill.id:
+        return
+
+    transaction.bill_id = bill.id
+    apply_effective_date(transaction, account, bill_due_date=bill.due_date)
+
+
 async def _cleanup_phantom_duplicates(
     session: AsyncSession,
     connection_id: uuid.UUID,
@@ -1129,6 +1179,66 @@ async def _sync_credit_card_bills(
     return by_external_id
 
 
+async def _log_bill_reconciliation_differences(
+    session: AsyncSession,
+    account_ids: set[uuid.UUID],
+) -> None:
+    """Log provider-total mismatches after a complete snapshot was ingested.
+
+    This is intentionally observational: missing provider line items must not
+    become fabricated balancing transactions. Transfer-like categories and
+    paired transfers are excluded with the same shared P/L rule used by the
+    credit-card totals UI.
+    """
+    if not account_ids:
+        return
+
+    bills = (await session.execute(
+        select(CreditCardBill).where(CreditCardBill.account_id.in_(account_ids))
+    )).scalars().all()
+    if not bills:
+        return
+
+    bill_ids = [bill.id for bill in bills]
+    effective_amount = case(
+        (Transaction.currency == Account.currency, Transaction.amount),
+        else_=func.coalesce(Transaction.amount_primary, Transaction.amount),
+    )
+    signed_amount = case(
+        (Transaction.type == "credit", -func.abs(effective_amount)),
+        else_=func.abs(effective_amount),
+    )
+    totals = await session.execute(
+        select(
+            Transaction.bill_id,
+            func.coalesce(func.sum(signed_amount), 0),
+        )
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.bill_id.in_(bill_ids),
+            Transaction.source != "opening_balance",
+            Transaction.status == "posted",
+            counts_as_pnl(),
+        )
+        .group_by(Transaction.bill_id)
+    )
+    local_totals = {bill_id: Decimal(total) for bill_id, total in totals.all()}
+
+    for bill in bills:
+        local_total = local_totals.get(bill.id, Decimal("0"))
+        difference = bill.total_amount - local_total
+        if abs(difference) > Decimal("0.01"):
+            logger.warning(
+                "Credit-card bill reconciliation mismatch account=%s bill=%s "
+                "provider_total=%s local_total=%s difference=%s",
+                bill.account_id,
+                bill.external_id,
+                bill.total_amount,
+                local_total,
+                difference,
+            )
+
+
 async def sync_connection(
     session: AsyncSession,
     connection_id: uuid.UUID,
@@ -1136,7 +1246,12 @@ async def sync_connection(
     user_id: uuid.UUID,
     trigger_provider_refresh: bool = False,
 ) -> tuple[BankConnection, int]:
-    connection = await get_connection(session, connection_id, workspace_id)
+    # PostgreSQL holds this row lock for the transaction. Manual, scheduled,
+    # and startup syncs therefore serialize per connection while unrelated
+    # connections remain independent.
+    connection = await _get_connection_for_sync(
+        session, connection_id, workspace_id
+    )
     if not connection:
         raise ValueError("Connection not found")
     if not connection.credentials:
@@ -1200,6 +1315,7 @@ async def sync_connection(
         user = await session.get(User, user_id)
         user_currency = user.primary_currency if user else get_settings().default_currency
         new_tx_ids: list[uuid.UUID] = []
+        reconciled_accounts: list[Account] = []
         merged_count = 0
         accounts_data = await provider.get_accounts(credentials)
         for acc_data in accounts_data:
@@ -1293,9 +1409,54 @@ async def sync_connection(
                 if connection.last_sync_at
                 else None
             )
-            transactions_data = await provider.get_transactions(
-                credentials, acc_data.external_id, since, payee_source=payee_source
+            transactions_data = None
+            last_bill_reconciliation_date = (
+                account.last_bill_reconciliation_at.astimezone(timezone.utc).date()
+                if account.last_bill_reconciliation_at
+                else None
             )
+            should_reconcile_bills = bool(bills_by_external_id) and (
+                trigger_provider_refresh
+                or last_bill_reconciliation_date is None
+                or last_bill_reconciliation_date < datetime.now(timezone.utc).date()
+            )
+            if should_reconcile_bills:
+                try:
+                    reconciliation_snapshot = (
+                        await provider.get_bill_reconciliation_transactions(
+                            credentials,
+                            acc_data.external_id,
+                            payee_source=payee_source,
+                        )
+                    )
+                    if reconciliation_snapshot is None or isinstance(
+                        reconciliation_snapshot, list
+                    ):
+                        transactions_data = reconciliation_snapshot
+                        if reconciliation_snapshot is not None:
+                            reconciled_accounts.append(account)
+                    else:
+                        logger.warning(
+                            "Ignoring invalid bill reconciliation snapshot from %s "
+                            "for account %s",
+                            connection.provider,
+                            account.id,
+                        )
+                except BillReconciliationUnavailable as e:
+                    logger.info(
+                        "Falling back to incremental transactions for account %s "
+                        "after bill reconciliation snapshot failed: %s",
+                        account.id,
+                        e,
+                    )
+
+            if transactions_data is None:
+                transactions_data = await provider.get_transactions(
+                    credentials,
+                    acc_data.external_id,
+                    since,
+                    payee_source=payee_source,
+                )
 
             if not import_pending:
                 transactions_data = [t for t in transactions_data if t.status != "pending"]
@@ -1324,26 +1485,9 @@ async def sync_connection(
                         continue
                     if existing_tx.status == "pending" and txn_data.status == "posted":
                         existing_tx.status = "posted"
-                    # Self-heal bill linkage: a tx that pre-dates the bills
-                    # feature (or whose bill we hadn't ingested last time)
-                    # picks up bill_id + bank-truth effective_date on the
-                    # first sync after the bill becomes available. Same
-                    # branch covers re-bucketing if the bank moved a tx to
-                    # a different bill (e.g. a chargeback).
-                    #
-                    # User's manual override wins: if effective_bill_date is
-                    # set, we don't touch bill_id or effective_date — the
-                    # user has explicitly overridden the auto bucketing.
-                    if (
-                        txn_data.bill_external_id
-                        and existing_tx.effective_bill_date is None
-                    ):
-                        bill = bills_by_external_id.get(txn_data.bill_external_id)
-                        if bill is not None and existing_tx.bill_id != bill.id:
-                            existing_tx.bill_id = bill.id
-                            apply_effective_date(
-                                existing_tx, account, bill_due_date=bill.due_date
-                            )
+                    _apply_provider_bill_link(
+                        existing_tx, txn_data, account, bills_by_external_id
+                    )
                     continue
 
                 # Pass 2: Fuzzy match against manual transactions
@@ -1356,6 +1500,9 @@ async def sync_connection(
                     fuzzy_match.raw_data = txn_data.raw_data
                     if not fuzzy_match.payee and txn_data.payee:
                         fuzzy_match.payee = txn_data.payee
+                    _apply_provider_bill_link(
+                        fuzzy_match, txn_data, account, bills_by_external_id
+                    )
                     merged_count += 1
                     continue
 
@@ -1374,16 +1521,9 @@ async def sync_connection(
                         synced_dup.status = "posted"
                         synced_dup.external_id = txn_data.external_id
                         synced_dup.raw_data = txn_data.raw_data
-                        if (
-                            txn_data.bill_external_id
-                            and synced_dup.effective_bill_date is None
-                        ):
-                            bill = bills_by_external_id.get(txn_data.bill_external_id)
-                            if bill is not None and synced_dup.bill_id != bill.id:
-                                synced_dup.bill_id = bill.id
-                                apply_effective_date(
-                                    synced_dup, account, bill_due_date=bill.due_date
-                                )
+                        _apply_provider_bill_link(
+                            synced_dup, txn_data, account, bills_by_external_id
+                        )
                     continue
 
                 # Pass 4: recurring bill placeholder. If generate_pending
@@ -1408,6 +1548,9 @@ async def sync_connection(
                         placeholder.payee_id = (
                             await get_or_create_payee(session, user_id, txn_data.payee)
                         ).id
+                    _apply_provider_bill_link(
+                        placeholder, txn_data, account, bills_by_external_id
+                    )
                     merged_count += 1
                     continue
 
@@ -1494,6 +1637,13 @@ async def sync_connection(
         # same payment with different ids. Once transfer detection has paired
         # the real one, the orphan twin gets removed here.
         await _cleanup_phantom_duplicates(session, connection.id)
+
+        await _log_bill_reconciliation_differences(
+            session, {account.id for account in reconciled_accounts}
+        )
+        reconciled_at = datetime.now(timezone.utc)
+        for account in reconciled_accounts:
+            account.last_bill_reconciliation_at = reconciled_at
 
         # Refresh investment holdings (brokerage, fixed income, funds,
         # etc.) when enabled for this connection. Errors here are logged but
