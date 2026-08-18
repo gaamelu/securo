@@ -1,7 +1,7 @@
 """track successful bill reconciliation per account
 
-Revision ID: 070
-Revises: 069
+Revision ID: 071
+Revises: 070
 Create Date: 2026-08-18
 
 An incremental fallback can complete even when a provider's full credit-card
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "070"
-down_revision: Union[str, None] = "069"
+revision: str = "071"
+down_revision: Union[str, None] = "070"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
