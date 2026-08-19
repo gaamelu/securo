@@ -193,7 +193,7 @@ export function AppLayout() {
   const versionA11yLabel = t('app.versionAriaLabel', { version: APP_VERSION })
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen overflow-x-hidden bg-background">
       {/* Mobile header */}
       <header className="sticky top-0 z-40 flex h-14 items-center gap-3 bg-sidebar border-b border-sidebar-border px-4 lg:hidden">
         <button
