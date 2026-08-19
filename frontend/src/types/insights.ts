@@ -310,7 +310,7 @@ export interface YieldWindowDays {
 
 export interface YieldBasis {
   monthly_gross: string
-  method: 'observed'
+  method: 'observed' | 'assumed'
   sample_size: number
   window_days: YieldWindowDays
   range: YieldRange
