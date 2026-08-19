@@ -1,7 +1,7 @@
 """separate provider bill membership from user bill overrides
 
-Revision ID: 072
-Revises: 071
+Revision ID: 074
+Revises: 073
 Create Date: 2026-08-18
 
 `transactions.bill_id` is user-facing state and may be moved by an explicit
@@ -18,8 +18,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "072"
-down_revision: Union[str, None] = "071"
+revision: str = "074"
+down_revision: Union[str, None] = "073"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
