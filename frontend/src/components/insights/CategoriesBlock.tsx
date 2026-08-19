@@ -13,7 +13,7 @@ import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { insights } from '@/lib/api'
 import { formatCurrency } from '@/lib/format'
-import { formatDelta, parseMoney, statusColor } from '@/lib/insights-utils'
+import { formatDelta, insightPeriodLabel, parseMoney, statusColor } from '@/lib/insights-utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { CategoriesData, CategoryRow, InsightsEnvelope, InsightsReference } from '@/types/insights'
 import { EnvelopeEmpty, EnvelopeError, InsightsCard } from './envelope-states'
@@ -44,6 +44,7 @@ export function CategoriesBlock({ reference }: { reference: InsightsReference })
       <p className="mb-3 text-xs text-muted-foreground">
         Comparação: <span className="font-medium text-foreground">{reference === 'budget' ? 'orçamento mensal' : 'sua mediana histórica'}</span>. Sem referência? <Link to="/budgets" className="underline underline-offset-2 hover:text-foreground">Defina por categoria</Link>.
       </p>
+      {envelope?.window && <p className="mb-3 text-[11px] text-muted-foreground">Período considerado: {insightPeriodLabel(envelope.window)}.</p>}
       {isLoading ? (
         <div className="flex flex-col gap-2">
           {Array.from({ length: 5 }).map((_, i) => (

@@ -95,6 +95,15 @@ export interface VitalSeriesPoint {
   trusted: boolean
 }
 
+export interface VitalTrend {
+  direction: 'up' | 'down' | 'stable'
+  intensity: 'strong' | 'light' | 'stable'
+  delta: Money | null
+  baseline: Money | null
+  favorable: boolean | null
+  label: string
+}
+
 export interface VitalCard {
   key: 'runway' | 'savings_rate' | 'net_worth' | 'credit_utilization'
   label: string
@@ -105,6 +114,7 @@ export interface VitalCard {
   available: boolean
   blocked_reason: string | null
   series: VitalSeriesPoint[] | null
+  trend?: VitalTrend | null
 }
 
 export type VitalsData = VitalCard[]
@@ -193,16 +203,23 @@ export interface SavingsDestination {
 // ---------------------------------------------------------------------------
 
 export interface ProjectionComponents {
-  income_expected: Money
-  recurring: Money
-  installments: Money
-  variable_estimate: Money
+  income_recurring: Money | null
+  income_variable_estimate: Money | null
+  expense_recurring: Money | null
+  expense_variable_estimate: Money | null
+  installments_known: Money | null
+  component_sources: Record<string, string>
+  component_windows: Record<string, string>
+  income_expected: Money | null
+  recurring: Money | null
+  installments: Money | null
+  variable_estimate: Money | null
 }
 
 export interface ProjectionPoint {
   month: string
   kind: 'actual' | 'projected'
-  balance: Money
+  balance: Money | null
   low: Money | null
   high: Money | null
   committed: Money

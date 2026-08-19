@@ -11,6 +11,8 @@ import { insights } from '@/lib/api'
 import { formatCurrency } from '@/lib/format'
 import {
   chartDomain,
+  insightMonthLabel,
+  insightPeriodLabel,
   natureChartValues,
   natureColor,
   parseMoney,
@@ -58,6 +60,7 @@ export function NatureBlock() {
         <NatureContent
           series={query.data.data.series}
           savingsDestination={query.data.data.savings_destination}
+          period={insightPeriodLabel(query.data.window)}
           currency={query.data.currency}
           isRefreshing={query.isFetching}
           transportError={query.isError}
@@ -71,6 +74,7 @@ export function NatureBlock() {
 function NatureContent({
   series,
   savingsDestination,
+  period,
   currency,
   isRefreshing,
   transportError,
@@ -78,6 +82,7 @@ function NatureContent({
 }: {
   series: NatureMonth[]
   savingsDestination: NatureData['savings_destination']
+  period: string
   currency: string
   isRefreshing: boolean
   transportError: boolean
@@ -115,6 +120,7 @@ function NatureContent({
 
   return (
     <div className="flex flex-col gap-3">
+      <p className="text-[11px] text-muted-foreground">Período considerado: {period}. Participação soma 100% do gasto classificado no mês; mês sem gasto aparece como indisponível.</p>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-3" aria-label="Legenda de natureza">
           {NATURE_KEYS.map((key) => (
@@ -201,7 +207,7 @@ function NatureContent({
                 )}
                 {!month.trusted && <rect x={x} y={yFor(domain.max)} width={BAR_WIDTH} height={Math.max(0, yFor(domain.min) - yFor(domain.max))} fill="url(#nature-untrusted-hatch)" rx={3} />}
                 <text x={x + BAR_WIDTH / 2} y={CHART_HEIGHT - 8} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>
-                  {month.month.slice(5)}
+                  {insightMonthLabel(month.month).replace(' de ', ' ')}
                 </text>
                 {isSelected && <rect x={x - 2} y={yFor(domain.max)} width={BAR_WIDTH + 4} height={Math.max(0, yFor(domain.min) - yFor(domain.max))} fill="none" stroke="var(--ring)" strokeDasharray="2 2" rx={4} />}
               </g>
@@ -212,9 +218,9 @@ function NatureContent({
 
       <div role="tooltip" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
         <p key={`${selected.month}-${metric}`} className="sr-only" aria-live="polite">
-          {selected.month}; {metric === 'amount' ? 'valores' : 'participação'} selecionados.
+          {insightMonthLabel(selected.month)}; {metric === 'amount' ? 'valores' : 'participação'} selecionados.
         </p>
-        <p className="font-medium text-foreground">{selected.month}{selected.trusted ? '' : ' · fora da janela confiável'}</p>
+        <p className="font-medium text-foreground">{insightMonthLabel(selected.month)}{selected.trusted ? '' : ' · fora da janela confiável'}</p>
         <div className="mt-1 grid grid-cols-2 gap-x-5 gap-y-0.5 sm:grid-cols-4">
           {NATURE_KEYS.map((key) => (
             <span key={key} className="text-muted-foreground">
@@ -239,7 +245,7 @@ function NatureContent({
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-xs">
             <thead><tr className="text-left text-muted-foreground"><th className="pb-1">Mês</th>{NATURE_KEYS.map((key) => <th key={key} className="pb-1 text-right">{NATURE_LABELS[key]}</th>)}</tr></thead>
-            <tbody>{series.map((month) => <tr key={month.month} tabIndex={0} className="border-t border-border/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" onFocus={() => setSelectedMonth(month.month)}><td className="py-1">{month.month}</td>{NATURE_KEYS.map((key) => <td key={key} className="py-1 text-right tabular-nums">{formatCell(month, key)}</td>)}</tr>)}</tbody>
+            <tbody>{series.map((month) => <tr key={month.month} tabIndex={0} className="border-t border-border/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" onFocus={() => setSelectedMonth(month.month)}><td className="py-1">{insightMonthLabel(month.month)}</td>{NATURE_KEYS.map((key) => <td key={key} className="py-1 text-right tabular-nums">{formatCell(month, key)}</td>)}</tr>)}</tbody>
           </table>
         </div>
       </details>

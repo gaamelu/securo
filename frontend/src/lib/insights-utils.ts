@@ -231,3 +231,29 @@ export function formatRatioPct(ratio: number, decimals = 2): string {
 export function formatPct(pct: number, decimals = 1): string {
   return `${pct.toFixed(decimals)}%`
 }
+
+/** Human-readable period label; ISO remains source of truth on the wire. */
+export function insightPeriodLabel(window: { from: string; to: string } | null | undefined, locale = 'pt-BR'): string {
+  if (!window) return 'Período não informado'
+  const from = new Date(`${window.from}T12:00:00`)
+  const to = new Date(`${window.to}T12:00:00`)
+  const monthYear = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' })
+  const full = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', year: 'numeric' })
+  if (window.from.slice(8) === '01') {
+    return `${monthYear.format(from)} a ${full.format(to)}`
+  }
+  return `${full.format(from)} a ${full.format(to)}`
+}
+
+export function insightMonthLabel(yearMonth: string, locale = 'pt-BR'): string {
+  return new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(
+    new Date(`${yearMonth}-15T12:00:00`),
+  )
+}
+
+/** Short natural label for dense chart axes; detail views keep full month names. */
+export function insightChartMonthLabel(yearMonth: string, locale = 'pt-BR'): string {
+  return new Intl.DateTimeFormat(locale, { month: 'short', year: 'numeric' }).format(
+    new Date(`${yearMonth}-15T12:00:00`),
+  )
+}

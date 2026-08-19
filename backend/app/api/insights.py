@@ -34,7 +34,7 @@ async def get_hygiene(
     return InsightsEnvelope[HygieneData](
         data=data,
         error=None,
-        window=None,
+        window=insights_service.standard_insights_window(),
         reference=None,
         currency=ctx.user.primary_currency,
         generated_at=datetime.now(timezone.utc),
@@ -55,15 +55,14 @@ async def get_categories(
 
 @router.get("/nature", response_model=InsightsEnvelope[NatureData])
 async def get_nature(
-    months: int = Query(12, ge=1, le=36),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
-    data = await insights_service.get_nature(session, ctx.workspace.id, ctx.user.primary_currency, months=months)
+    data = await insights_service.get_nature(session, ctx.workspace.id, ctx.user.primary_currency)
     return InsightsEnvelope[NatureData](
         data=data,
         error=None,
-        window=None,
+        window=insights_service.standard_insights_window(),
         reference=None,
         currency=ctx.user.primary_currency,
         generated_at=datetime.now(timezone.utc),
@@ -115,7 +114,7 @@ async def get_vitals(
     return InsightsEnvelope[VitalsData](
         data=data,
         error=None,
-        window=None,
+        window=insights_service.standard_insights_window(),
         reference=None,
         currency=ctx.user.primary_currency,
         generated_at=datetime.now(timezone.utc),
@@ -132,7 +131,7 @@ async def get_flow(
     return InsightsEnvelope[FlowData](
         data=data,
         error=None,
-        window=None,
+        window=insights_service.standard_insights_window(),
         reference=None,
         currency=ctx.user.primary_currency,
         generated_at=datetime.now(timezone.utc),
@@ -148,7 +147,7 @@ async def get_projection(
     return InsightsEnvelope[ProjectionData](
         data=data,
         error=None,
-        window=None,
+        window=insights_service.standard_insights_window(),
         reference=None,
         currency=ctx.user.primary_currency,
         generated_at=datetime.now(timezone.utc),
@@ -164,7 +163,7 @@ async def get_goals(
     return InsightsEnvelope[GoalsData](
         data=data,
         error=None,
-        window=None,
+        window=insights_service.standard_insights_window(),
         reference=None,
         currency=ctx.user.primary_currency,
         generated_at=datetime.now(timezone.utc),
@@ -180,7 +179,7 @@ async def get_alerts(
     return InsightsEnvelope[AlertsData](
         data=data,
         error=None,
-        window=None,
+        window=insights_service.standard_insights_window(),
         reference=None,
         currency=ctx.user.primary_currency,
         generated_at=datetime.now(timezone.utc),

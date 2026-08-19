@@ -963,8 +963,9 @@ async def test_runway_denominator_includes_peak_installment_month(
     )
     await session.commit()
 
-    # 3 trailing months of steady essential spend (meets MIN_MONTHS_FOR_RUNWAY).
-    for i in range(1, 4):
+    # 6 trailing months of steady essential spend (meets the six-month
+    # trusted runway baseline).
+    for i in range(1, 7):
         when = _shift_month_for_test(today, -i)
         await _spend(
             session, user=test_user, workspace=test_workspace, account=test_account,

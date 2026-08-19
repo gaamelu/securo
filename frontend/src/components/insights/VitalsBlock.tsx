@@ -10,7 +10,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { formatCurrency } from '@/lib/format'
-import { parseMoney, statusColor } from '@/lib/insights-utils'
+import { insightPeriodLabel, parseMoney, statusColor } from '@/lib/insights-utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { InsightsEnvelope, VitalCard, VitalsData } from '@/types/insights'
 import { EnvelopeEmpty, EnvelopeError, InsightsCard } from './envelope-states'
@@ -40,7 +40,7 @@ export function VitalsBlock() {
       ) : !envelope?.data || envelope.data.length === 0 ? (
         <EnvelopeEmpty label="Sem sinais vitais ainda." />
       ) : (
-        <VitalsContent cards={envelope.data} currency={envelope.currency} />
+        <VitalsContent cards={envelope.data} currency={envelope.currency} period={insightPeriodLabel(envelope.window, localeForWindow())} />
       )}
     </InsightsCard>
   )
@@ -78,14 +78,20 @@ function formatVitalValue(
   }
 }
 
-function VitalsContent({ cards, currency }: { cards: VitalsData; currency: string }) {
+function localeForWindow() {
+  return 'pt-BR'
+}
+
+function VitalsContent({ cards, currency, period }: { cards: VitalsData; currency: string; period: string }) {
   const { mask } = usePrivacyMode()
   const { user } = useAuth()
   const displayCurrency = currency || user?.preferences?.currency_display || 'USD'
   const locale = useDisplayLocale()
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="flex flex-col gap-3">
+      <p className="text-[11px] text-muted-foreground">Período considerado: {period}. Curvas mostram comportamento histórico; cor da curva indica direção, não substitui estado atual.</p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {cards.map((card) => (
         <VitalCardView
           key={card.key}
@@ -95,6 +101,7 @@ function VitalsContent({ cards, currency }: { cards: VitalsData; currency: strin
           mask={mask}
         />
       ))}
+      </div>
     </div>
   )
 }
@@ -136,8 +143,20 @@ function VitalCardView({
 
           {card.reference && (
             <p className="text-[11px] text-muted-foreground privacy-sensitive">
-              {card.reference.label}: {mask(formatCurrency(parseMoney(card.reference.value), currency, locale))}
+              Base: {card.reference.label}: {mask(formatCurrency(parseMoney(card.reference.value), currency, locale))}
             </p>
+          )}
+
+          {card.series && card.series.length > 1 && (
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <Sparkline card={card} />
+              {card.trend && (
+                <div className="min-w-[7rem] text-right text-[11px]" style={{ color: trendColor(card.trend.favorable, card.trend.direction) }}>
+                  <p className="font-medium">{trendArrow(card.trend.direction)} {card.trend.label}</p>
+                  <p className="text-muted-foreground">variação: {formatTrendDelta(card, card.trend.delta, currency, locale, mask)}</p>
+                </div>
+              )}
+            </div>
           )}
 
           {/* net_worth carries a blocked_reason even when available: it
@@ -151,4 +170,33 @@ function VitalCardView({
       )}
     </div>
   )
+}
+
+function formatTrendDelta(card: VitalCard, value: string | null, currency: string, locale: string, mask: (v: string) => string) {
+  if (value === null) return '—'
+  if (card.unit === 'BRL') return mask(formatCurrency(parseMoney(value), currency, locale))
+  return `${parseMoney(value).toFixed(1)}${card.unit === 'percent' ? '%' : ' meses'}`
+}
+
+function trendArrow(direction: NonNullable<VitalCard['trend']>['direction']) {
+  return direction === 'up' ? '↑' : direction === 'down' ? '↓' : '→'
+}
+
+function trendColor(favorable: boolean | null, direction: NonNullable<VitalCard['trend']>['direction']) {
+  if (favorable === true) return 'var(--chart-3)'
+  if (favorable === false) return 'var(--destructive)'
+  return direction === 'stable' ? 'var(--muted-foreground)' : 'var(--chart-4)'
+}
+
+function Sparkline({ card }: { card: VitalCard }) {
+  const values = card.series?.map((point) => parseMoney(point.value)) ?? []
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const points = values.map((value, index) => {
+    const x = values.length === 1 ? 0 : (index / (values.length - 1)) * 112
+    const y = 24 - ((value - min) / Math.max(0.0001, max - min)) * 20
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+  const color = trendColor(card.trend?.favorable ?? null, card.trend?.direction ?? 'stable')
+  return <svg width="116" height="28" viewBox="0 0 116 28" role="img" aria-label={`Tendência: ${card.trend?.label ?? 'sem referência'}`}><polyline points={points} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><circle cx={values.length > 1 ? 112 : 0} cy={values.length > 1 ? 24 - ((values[values.length - 1] - min) / Math.max(0.0001, max - min)) * 20 : 24} r="2.5" fill={color} /></svg>
 }

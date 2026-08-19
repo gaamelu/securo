@@ -10,7 +10,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { formatCurrency } from '@/lib/format'
-import { chartDomain, parseMoney } from '@/lib/insights-utils'
+import { chartDomain, insightChartMonthLabel, insightMonthLabel, insightPeriodLabel, parseMoney } from '@/lib/insights-utils'
 import { niceTicks } from '@/lib/chart-scale'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { InsightsEnvelope, ProjectionData } from '@/types/insights'
@@ -41,6 +41,7 @@ export function ProjectionBlock() {
         <ProjectionContent
           data={query.data.data}
           currency={query.data.currency}
+          period={insightPeriodLabel(query.data.window)}
           isRefreshing={query.isFetching}
           transportError={query.isError}
           onRetry={() => query.refetch()}
@@ -59,12 +60,14 @@ const PLOT_TOP = 14
 function ProjectionContent({
   data,
   currency,
+  period,
   isRefreshing,
   transportError,
   onRetry,
 }: {
   data: ProjectionData
   currency: string
+  period: string
   isRefreshing: boolean
   transportError: boolean
   onRetry: () => void
@@ -87,12 +90,15 @@ function ProjectionContent({
   const zeroBalanceY = balanceY(0)
   const zeroCommittedY = committedY(0)
   const firstProjectedIndex = points.findIndex((point) => point.kind === 'projected')
+  const actualPoints = points.filter((point) => point.kind === 'actual')
+  const projectedPoints = points.filter((point) => point.kind === 'projected')
 
   const fmt = (value: string | null | undefined) => value === null || value === undefined ? '—' : mask(formatCurrency(parseMoney(value), displayCurrency, locale))
   const fmtAssumption = (value: string) => /^-?\d+(\.\d+)?$/.test(value) ? fmt(value) : value
 
   return (
     <div className="flex flex-col gap-4">
+      <p className="text-[11px] text-muted-foreground">Histórico e futuro separados. Real: {actualPoints.length ? `${insightMonthLabel(actualPoints[0].month)} a ${insightMonthLabel(actualPoints[actualPoints.length - 1].month)}` : period}; projetado: {projectedPoints.length ? `${insightMonthLabel(projectedPoints[0].month)} a ${insightMonthLabel(projectedPoints[projectedPoints.length - 1].month)}` : 'indisponível'}. Faixa de confiança removida.</p>
       {transportError && <EnvelopeRetryError message="Atualização falhou; mostrando dados anteriores." onRetry={onRetry} compact />}
       {isRefreshing && <p className="text-[11px] text-muted-foreground" role="status">Atualizando…</p>}
 
@@ -114,7 +120,7 @@ function ProjectionContent({
               return (
                 <g key={point.month} onMouseEnter={() => setSelectedIndex(index)} onClick={() => setSelectedIndex(index)} opacity={selected ? 1 : 0.9}>
                   <circle cx={xFor(index)} cy={balanceY(parseMoney(point.balance))} r={selected ? 5 : 3.5} fill={negative ? 'var(--destructive)' : point.kind === 'actual' ? 'var(--primary)' : 'var(--card)'} stroke={negative ? 'var(--destructive)' : 'var(--primary)'} strokeWidth={1.5} />
-                  {!(point.kind === 'projected' && index > 0 && points[index - 1].month === point.month) && <text x={xFor(index)} y={BALANCE_HEIGHT - 8} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>{point.month.slice(5)}</text>}
+                  {<text x={xFor(index)} y={BALANCE_HEIGHT - 8} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>{insightChartMonthLabel(point.month)}</text>}
                 </g>
               )
             })}
@@ -152,10 +158,11 @@ function ProjectionContent({
           <span className="text-muted-foreground">Parcelas: <strong className="font-medium text-foreground">{fmt(selected.committed)}</strong></span>
         </div>
         <div className="mt-1 grid gap-x-4 gap-y-0.5 text-muted-foreground sm:grid-cols-2">
-          <span>Renda: {fmt(selected.components?.income_expected)}</span>
-          <span>Recorrentes: {fmt(selected.components?.recurring)}</span>
-          <span>Parcelas: {fmt(selected.components?.installments)}</span>
-          <span>Variável: {fmt(selected.components?.variable_estimate)}</span>
+          <span>Receita recorrente: {fmt(selected.components?.income_recurring)}</span>
+          <span>Receita variável estimada: {fmt(selected.components?.income_variable_estimate)}</span>
+          <span>Despesa fixa/recorrente: {fmt(selected.components?.expense_recurring)}</span>
+          <span>Gasto variável estimado: {fmt(selected.components?.expense_variable_estimate)}</span>
+          <span>Parcelas conhecidas: {fmt(selected.components?.installments_known)}</span>
         </div>
       </div>
 
@@ -163,8 +170,8 @@ function ProjectionContent({
         <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Explorar dados</summary>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-xs">
-            <thead><tr className="text-left text-muted-foreground"><th className="pb-1">Mês</th><th className="pb-1 text-right">Tipo</th><th className="pb-1 text-right">Saldo</th><th className="pb-1 text-right">Parcelas</th></tr></thead>
-            <tbody>{points.map((point, index) => <tr key={point.month} tabIndex={0} onFocus={() => setSelectedIndex(index)} className="border-t border-border/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"><td className="py-1">{point.month}</td><td className="py-1 text-right">{point.kind === 'actual' ? 'Real' : 'Projetado'}</td><td className="py-1 text-right tabular-nums">{fmt(point.balance)}</td><td className="py-1 text-right tabular-nums">{fmt(point.committed)}</td></tr>)}</tbody>
+            <thead><tr className="text-left text-muted-foreground"><th className="pb-1">Mês considerado</th><th className="pb-1 text-right">Tipo</th><th className="pb-1 text-right">Saldo</th><th className="pb-1 text-right">Parcelas</th></tr></thead>
+            <tbody>{points.map((point, index) => <tr key={point.month} tabIndex={0} onFocus={() => setSelectedIndex(index)} className="border-t border-border/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"><td className="py-1">{insightMonthLabel(point.month)}</td><td className="py-1 text-right">{point.kind === 'actual' ? 'Real observado' : 'Projetado'}</td><td className="py-1 text-right tabular-nums">{fmt(point.balance)}</td><td className="py-1 text-right tabular-nums">{fmt(point.committed)}</td></tr>)}</tbody>
           </table>
         </div>
       </details>

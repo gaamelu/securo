@@ -18,7 +18,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { formatCurrency } from '@/lib/format'
-import { parseMoney } from '@/lib/insights-utils'
+import { insightPeriodLabel, parseMoney } from '@/lib/insights-utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import type { AlertRow, AlertsData, InsightsEnvelope } from '@/types/insights'
@@ -61,13 +61,13 @@ export function AlertsBlock() {
       ) : !envelope?.data || envelope.data.length === 0 ? (
         <EnvelopeEmpty label="Nenhum alerta no momento." />
       ) : (
-        <AlertsContent alerts={envelope.data} currency={envelope.currency} />
+        <AlertsContent alerts={envelope.data} currency={envelope.currency} period={insightPeriodLabel(envelope.window)} />
       )}
     </InsightsCard>
   )
 }
 
-function AlertsContent({ alerts, currency }: { alerts: AlertsData; currency: string }) {
+function AlertsContent({ alerts, currency, period }: { alerts: AlertsData; currency: string; period: string }) {
   const { mask } = usePrivacyMode()
   const { user } = useAuth()
   const displayCurrency = currency || user?.preferences?.currency_display || 'USD'
@@ -76,11 +76,13 @@ function AlertsContent({ alerts, currency }: { alerts: AlertsData; currency: str
   const sorted = [...alerts].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
   return (
-    <ul className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
+      <p className="text-[11px] text-muted-foreground">Período considerado: {period}. Valores à direita mostram a diferença ou impacto indicado pelo alerta.</p>
+      <ul className="flex flex-col gap-2">
       {sorted.map((alert) => (
         <li
           key={alert.id}
-          className="flex flex-wrap items-start gap-3 rounded-lg border border-border px-3 py-2"
+          className="grid grid-cols-[auto_minmax(0,1fr)_minmax(7rem,auto)] items-start gap-3 rounded-lg border border-border px-3 py-2"
         >
           <Badge variant={SEVERITY_BADGE[alert.severity]} className="mt-0.5 shrink-0">
             {SEVERITY_LABEL[alert.severity]}
@@ -95,12 +97,23 @@ function AlertsContent({ alerts, currency }: { alerts: AlertsData; currency: str
           </div>
 
           {alert.amount !== null && (
-            <span className="basis-full text-right text-sm font-semibold tabular-nums text-foreground shrink-0 privacy-sensitive sm:basis-auto">
-              {mask(formatCurrency(parseMoney(alert.amount), displayCurrency, locale))}
-            </span>
+            <div className="min-w-[7rem] text-right privacy-sensitive">
+              <p className="text-sm font-semibold tabular-nums text-foreground">{mask(formatCurrency(parseMoney(alert.amount), displayCurrency, locale))}</p>
+              <p className="text-[10px] text-muted-foreground">{amountContext(alert.kind)}</p>
+            </div>
           )}
         </li>
       ))}
-    </ul>
+      </ul>
+    </div>
   )
+}
+
+function amountContext(kind: AlertRow['kind']) {
+  switch (kind) {
+    case 'overspend': return 'diferença acima do padrão'
+    case 'cash_gap': return 'déficit projetado'
+    case 'goal_off_track': return 'aporte necessário'
+    default: return 'valor de referência'
+  }
 }

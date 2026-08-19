@@ -119,6 +119,15 @@ class VitalSeriesPoint(BaseModel):
     trusted: bool
 
 
+class VitalTrend(BaseModel):
+    direction: Literal["up", "down", "stable"]
+    intensity: Literal["strong", "light", "stable"]
+    delta: Money | None
+    baseline: Money | None
+    favorable: bool | None
+    label: str
+
+
 class VitalCard(BaseModel):
     key: Literal["runway", "savings_rate", "net_worth", "credit_utilization"]
     label: str
@@ -129,6 +138,7 @@ class VitalCard(BaseModel):
     available: bool
     blocked_reason: str | None
     series: list[VitalSeriesPoint] | None
+    trend: VitalTrend | None = None
 
 
 # `vitals` in fixtures.py is a bare list of the four cards.
@@ -229,16 +239,27 @@ class NatureData(BaseModel):
 
 
 class ProjectionComponents(BaseModel):
-    income_expected: Money
-    recurring: Money
-    installments: Money
-    variable_estimate: Money
+    # Explicit components are the source of truth for new clients. Legacy
+    # fields remain optional so old consumers can roll forward safely.
+    income_recurring: Money | None = None
+    income_variable_estimate: Money | None = None
+    expense_recurring: Money | None = None
+    expense_variable_estimate: Money | None = None
+    installments_known: Money | None = None
+    component_sources: dict[str, str] = Field(default_factory=dict)
+    component_windows: dict[str, str] = Field(default_factory=dict)
+
+    # Compatibility aliases from first Insights implementation.
+    income_expected: Money | None = None
+    recurring: Money | None = None
+    installments: Money | None = None
+    variable_estimate: Money | None = None
 
 
 class ProjectionPoint(BaseModel):
     month: str
     kind: Literal["actual", "projected"]
-    balance: Money
+    balance: Money | None
     low: Money | None
     high: Money | None
     committed: Money

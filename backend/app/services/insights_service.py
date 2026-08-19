@@ -42,6 +42,7 @@ from app.schemas.insights import (
     HygieneOffender,
     InsightsEnvelope,
     InsightsError,
+    InsightsWindow,
     NatureData,
     NatureMonth,
     NatureShares,
@@ -57,6 +58,8 @@ from app.schemas.insights import (
     SavingsDestination,
     VitalCard,
     VitalReference,
+    VitalSeriesPoint,
+    VitalTrend,
     YieldBasis,
     YieldRange,
     YieldWindowDays,
@@ -96,9 +99,9 @@ _NATURE_KEYS = ("fixed", "variable", "discretionary", "unclassified")
 # number that looks precise but isn't.
 MIN_MONTHS_FOR_MEDIAN = 6
 
-# Runway is the single most useful vital, and tolerates a thinner sample than
-# the category-comparison median above — 3 trusted months rather than 6.
-MIN_MONTHS_FOR_RUNWAY = 3
+# Safety reference uses six complete months. A shorter sample produces a
+# visually precise but financially weak baseline.
+MIN_MONTHS_FOR_RUNWAY = 6
 
 # How many worst offenders to surface in the hygiene block.
 _WORST_OFFENDERS_LIMIT = 5
@@ -365,7 +368,7 @@ async def get_categories(
         reference_by_category, reference_method = await _budget_reference(
             session, workspace_id, primary_currency, target_month
         )
-        window = None
+        window = standard_insights_window()
     else:
         trusted_from = await _get_trusted_from(session, workspace_id)
         reference_by_category, reference_method, months_used = await _historical_reference(
@@ -382,12 +385,12 @@ async def get_categories(
                     ),
                     retryable=False,
                 ),
-                window=None,
+                window=standard_insights_window(),
                 reference=reference,
                 currency=primary_currency,
                 generated_at=datetime.now(timezone.utc),
             )
-        window = None
+        window = standard_insights_window()
 
     rows: list[CategoryRow] = []
     all_category_ids = set(actual_by_category.keys()) | set(reference_by_category.keys())
@@ -603,6 +606,9 @@ async def get_nature(
         month_starts.append(cursor)
         cursor = _shift_month(cursor, -1)
     month_starts.reverse()
+    month_totals = await _monthly_totals(
+        session, workspace_id, primary_currency, accounting_mode, month_starts
+    )
 
     effective_nature = func.coalesce(Transaction.expense_nature, Category.expense_nature)
 
@@ -650,8 +656,8 @@ async def get_nature(
         series.append(
             NatureMonth(
                 month=month_start.strftime("%Y-%m"),
-                trusted=True,
-                income=None,
+                trusted=month_start != current_month_start,
+                income=month_totals[month_start]["income"],
                 values=values,
                 shares=shares,
             )
@@ -668,18 +674,10 @@ async def get_nature(
     if savings_accounts:
         start = month_starts[0]
         end = _month_range(month_starts[-1])[1]
-        result = await session.execute(
-            select(func.sum(_transaction_primary_amount(primary_currency)))
-            .where(
-                Transaction.workspace_id == workspace_id,
-                Transaction.account_id.in_([account.id for account in savings_accounts]),
-                Transaction.type == "credit",
-                date_col >= start,
-                date_col < end,
-                counts_as_user_pnl(),
-            )
+        contribution_by_month = await _savings_contributions_by_month(
+            session, workspace_id, primary_currency, accounting_mode, month_starts
         )
-        amount = Decimal(str(result.scalar_one() or 0)).quantize(Decimal("0.01"))
+        amount = sum(contribution_by_month.values(), Decimal("0")).quantize(Decimal("0.01"))
         income_result = await session.execute(
             select(func.sum(_transaction_primary_amount(primary_currency)))
             .outerjoin(Category, Transaction.category_id == Category.id)
@@ -1090,6 +1088,94 @@ def _trailing_month_starts(today: date, n: int, *, include_current: bool = False
     return starts
 
 
+def standard_insights_window(today: date | None = None) -> InsightsWindow:
+    """Common report window exposed by every diagnostic block."""
+    today = today or date.today()
+    current = _month_start(today)
+    return InsightsWindow(
+        **{"from": _shift_month(current, -11), "to": today},
+        trusted_from=_shift_month(current, -6),
+        months_trusted=6,
+    )
+
+
+def _trend_summary(values: list[Decimal], *, favorable_up: bool, baseline: Decimal | None) -> VitalTrend | None:
+    """Classify direction once on server; UI only renders it."""
+    if len(values) < 2:
+        return None
+    first, last = values[0], values[-1]
+    delta = (last - first).quantize(Decimal("0.01"))
+    scale = max(abs(first), abs(last), Decimal("1"))
+    relative = abs(delta) / scale
+    if relative < Decimal("0.03"):
+        direction: Literal["up", "down", "stable"] = "stable"
+        intensity: Literal["strong", "light", "stable"] = "stable"
+        label = "estável"
+        favorable = None
+    else:
+        direction = "up" if delta > 0 else "down"
+        intensity = "strong" if relative >= Decimal("0.15") else "light"
+        favorable = direction == "up" if favorable_up else direction == "down"
+        label = "melhorando" if favorable else "piorando"
+    return VitalTrend(
+        direction=direction,
+        intensity=intensity,
+        delta=delta,
+        baseline=baseline.quantize(Decimal("0.01")) if baseline is not None else None,
+        favorable=favorable,
+        label=label,
+    )
+
+
+async def _savings_contributions_by_month(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    primary_currency: str,
+    accounting_mode: str,
+    month_starts: list[date],
+) -> dict[date, Decimal]:
+    """Net only confirmed internal transfers into savings accounts.
+
+    External credits and unpaired rows are intentionally excluded.
+    """
+    out = {month: Decimal("0") for month in month_starts}
+    if not month_starts:
+        return out
+    savings = (await session.scalars(select(Account).where(
+        Account.workspace_id == workspace_id,
+        Account.type == "savings",
+        Account.is_closed.is_(False),
+    ))).all()
+    if not savings:
+        return out
+    date_col = reporting_date_col(accounting_mode)
+    result = await session.execute(
+        select(Transaction, Account.type)
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.workspace_id == workspace_id,
+            Transaction.account_id.in_([account.id for account in savings]),
+            Transaction.transfer_pair_id.is_not(None),
+            date_col >= month_starts[0],
+            date_col < _month_range(month_starts[-1])[1],
+        )
+    )
+    for transaction, account_type in result.all():
+        if account_type != "savings":
+            continue
+        reported_date = transaction.effective_bill_date or transaction.effective_date or transaction.date
+        month = reported_date.replace(day=1)
+        if month not in out:
+            continue
+        amount = transaction.amount_primary if transaction.currency == primary_currency else transaction.amount_primary
+        if amount is None:
+            amount, _ = await convert(session, Decimal(str(transaction.amount)), transaction.currency, primary_currency)
+        else:
+            amount = Decimal(str(amount))
+        out[month] += amount if transaction.type == "credit" else -amount
+    return out
+
+
 
 # ---------------------------------------------------------------------------
 # Vitals
@@ -1129,7 +1215,7 @@ async def _essential_monthly_cost(
     Returns (cost, months_used). cost is None when months_used is below
     MIN_MONTHS_FOR_RUNWAY.
     """
-    trailing = _trailing_month_starts(today, 12, include_current=False)
+    trailing = _trailing_month_starts(today, 6, include_current=False)
     date_col = reporting_date_col(accounting_mode)
     effective_nature = func.coalesce(Transaction.expense_nature, Category.expense_nature)
 
@@ -1262,12 +1348,29 @@ async def _runway_card(
 
     months = (fund_balance / essential_cost).quantize(Decimal("0.1"))
     projection = await get_projection(session, workspace_id, primary_currency)
-    projected_balances = [point.balance for point in projection.points if point.kind == "projected"]
+    projected_balances = [point.balance for point in projection.points if point.kind == "projected" and point.balance is not None]
     minimum_projected = min(projected_balances, default=Decimal("0"))
     status_name = security_status(months, minimum_projected, essential_cost)
     status: Literal["good", "warn", "crit", "unknown"] = {
         "safe": "good", "attention": "warn", "risk": "crit"
     }[status_name]
+
+    trend_points: list[VitalSeriesPoint] = []
+    for month in _trailing_month_starts(today, 12, include_current=False):
+        month_end = _month_range(month)[1] - timedelta(days=1)
+        balance = Decimal("0")
+        savings_accounts = (await session.scalars(select(Account).where(
+            Account.workspace_id == workspace_id,
+            Account.type == "savings",
+            Account.is_closed.is_(False),
+        ))).all()
+        for account in savings_accounts:
+            raw = await _account_balance_at(session, account, month_end)
+            converted, _ = await convert(session, Decimal(str(raw)), account.currency, primary_currency)
+            balance += converted
+        trend_points.append(VitalSeriesPoint(
+            date=month.isoformat(), value=(balance / essential_cost).quantize(Decimal("0.01")), trusted=True
+        ))
 
     return VitalCard(
         key="runway",
@@ -1286,7 +1389,10 @@ async def _runway_card(
             f"Piso projetado em 12 meses: R$ {minimum_projected:.2f}."
             if minimum_projected < essential_cost else None
         ),
-        series=None,
+        series=trend_points,
+        trend=_trend_summary(
+            [point.value for point in trend_points], favorable_up=True, baseline=Decimal("6")
+        ),
     )
 
 
@@ -1303,32 +1409,10 @@ async def _savings_rate_card(
         session, workspace_id, primary_currency, accounting_mode, month_starts
     )
     income = sum((totals[month]["income"] for month in month_starts), Decimal("0"))
-    savings_accounts = await session.scalars(
-        select(Account).where(
-            Account.workspace_id == workspace_id,
-            Account.type == "savings",
-            Account.is_closed.is_(False),
-        )
+    contribution_by_month = await _savings_contributions_by_month(
+        session, workspace_id, primary_currency, accounting_mode, month_starts
     )
-    accounts = savings_accounts.all()
-    contribution = Decimal("0")
-    if accounts:
-        account_ids = [account.id for account in accounts]
-        date_col = reporting_date_col(accounting_mode)
-        start = month_starts[0]
-        end = _month_range(month_starts[-1])[1]
-        result = await session.execute(
-            select(func.sum(_transaction_primary_amount(primary_currency)))
-            .where(
-                Transaction.workspace_id == workspace_id,
-                Transaction.account_id.in_(account_ids),
-                Transaction.type == "credit",
-                date_col >= start,
-                date_col < end,
-                counts_as_user_pnl(),
-            )
-        )
-        contribution = Decimal(str(result.scalar_one() or 0))
+    contribution = sum(contribution_by_month.values(), Decimal("0"))
 
     if income <= 0:
         return VitalCard(
@@ -1341,6 +1425,7 @@ async def _savings_rate_card(
             available=False,
             blocked_reason="Sem renda registrada no mês.",
             series=None,
+            trend=None,
         )
 
     rate = savings_rate(contribution, income)
@@ -1351,6 +1436,13 @@ async def _savings_rate_card(
     else:
         status = "crit"
 
+    series = []
+    for month in month_starts:
+        month_income = totals[month]["income"]
+        month_contribution = contribution_by_month[month]
+        month_rate = savings_rate(month_contribution, month_income) if month_income > 0 else Decimal("0")
+        series.append(VitalSeriesPoint(date=month.isoformat(), value=month_rate, trusted=month != _month_start(today)))
+
     return VitalCard(
         key="savings_rate",
         label="Taxa de poupança",
@@ -1359,13 +1451,14 @@ async def _savings_rate_card(
         reference=VitalReference(
             value=contribution.quantize(Decimal("0.01")),
             source="historical",
-            method="savings_accounts_credits_over_external_inflows_rolling_6_months",
-            label="Aporte acumulado em savings (6 meses)",
+            method="paired_savings_transfers_over_external_inflows_rolling_6_months",
+            label="Aportes líquidos em savings / entradas externas (6 meses)",
         ),
         status=status,
         available=True,
         blocked_reason=None,
-        series=None,
+        series=series,
+        trend=_trend_summary([point.value for point in series], favorable_up=True, baseline=Decimal("20")),
     )
 
 
@@ -1425,6 +1518,13 @@ async def _net_worth_card(
 
     net_worth = accounts_total + assets_total - liabilities_total
 
+    trend_points: list[VitalSeriesPoint] = []
+    for month in _trailing_month_starts(today, 12, include_current=False):
+        month_balance = await _total_open_account_balance(
+            session, workspace_id, primary_currency, _month_range(month)[1] - timedelta(days=1)
+        )
+        trend_points.append(VitalSeriesPoint(date=month.isoformat(), value=month_balance, trusted=True))
+
     return VitalCard(
         key="net_worth",
         label="Patrimônio líquido",
@@ -1439,13 +1539,16 @@ async def _net_worth_card(
             "mesmo dinheiro duas vezes. Por isso este número difere do valor "
             "mostrado nas telas de Relatórios."
         ),
-        series=None,
+        series=trend_points,
+        trend=_trend_summary([point.value for point in trend_points], favorable_up=True, baseline=None),
     )
 
 
 async def _credit_utilization_card(
-    session: AsyncSession, workspace_id: uuid.UUID, primary_currency: str
+    session: AsyncSession, workspace_id: uuid.UUID, primary_currency: str,
+    today: date | None = None,
 ) -> VitalCard:
+    today = today or date.today()
     result = await session.execute(
         select(Account).where(
             Account.workspace_id == workspace_id,
@@ -1462,7 +1565,7 @@ async def _credit_utilization_card(
         if account.credit_limit is None:
             continue
         has_limit_data = True
-        current_balance = await _account_balance_at(session, account, date.today())
+        current_balance = await _account_balance_at(session, account, today)
         available = compute_available_credit(account.credit_limit, Decimal(str(current_balance)))
         utilized = account.credit_limit - (available if available is not None else account.credit_limit)
         limit_c, _ = await convert(session, account.credit_limit, account.currency, primary_currency)
@@ -1503,6 +1606,25 @@ async def _credit_utilization_card(
     else:
         status = "crit"
 
+    trend_points: list[VitalSeriesPoint] = []
+    for month in _trailing_month_starts(today, 12, include_current=False):
+        month_limit = Decimal("0")
+        month_used = Decimal("0")
+        for account in accounts:
+            if account.credit_limit is None:
+                continue
+            balance = await _account_balance_at(session, account, _month_range(month)[1] - timedelta(days=1))
+            available = compute_available_credit(account.credit_limit, Decimal(str(balance)))
+            used = account.credit_limit - (available if available is not None else account.credit_limit)
+            limit_c, _ = await convert(session, account.credit_limit, account.currency, primary_currency)
+            used_c, _ = await convert(session, used, account.currency, primary_currency)
+            month_limit += limit_c
+            month_used += used_c
+        if month_limit > 0:
+            trend_points.append(VitalSeriesPoint(
+                date=month.isoformat(), value=(month_used / month_limit * 100).quantize(Decimal("0.01")), trusted=True
+            ))
+
     return VitalCard(
         key="credit_utilization",
         label="Utilização do crédito",
@@ -1512,7 +1634,8 @@ async def _credit_utilization_card(
         status=status,
         available=True,
         blocked_reason=None,
-        series=None,
+        series=trend_points,
+        trend=_trend_summary([point.value for point in trend_points], favorable_up=False, baseline=Decimal("30")),
     )
 
 
@@ -1727,19 +1850,42 @@ async def get_projection(
     history_totals = await _monthly_totals(
         session, workspace_id, primary_currency, accounting_mode, history_months
     )
-    history_income = [
-        history_totals[m]["income"]
-        for m in history_months
-        if history_totals[m]["income"] > 0
-    ]
+    history_income = [history_totals[m]["income"] for m in history_months if history_totals[m]["income"] > 0]
     history_consumption = [history_totals[m]["consumption"] for m in history_months]
 
-    income_expected = (
-        Decimal(str(statistics.median([float(v) for v in history_income]))).quantize(Decimal("0.01"))
-        if history_income
-        else Decimal("0.00")
+    # Residual histories keep recurring rules and known installments from
+    # being counted again as variable estimates.
+    date_col = reporting_date_col(accounting_mode)
+    residual_result = await session.execute(
+        select(
+            date_col.label("reported_on"), Transaction.type,
+            func.sum(_transaction_primary_amount(primary_currency)).label("total"),
+        ).where(
+            Transaction.workspace_id == workspace_id,
+            date_col >= history_months[0],
+            date_col < _month_range(history_months[-1])[1],
+            counts_as_user_pnl(),
+            Transaction.recurring_transaction_id.is_(None),
+            Transaction.total_installments.is_(None),
+        ).group_by(date_col, Transaction.type)
     )
-    variable_values = [float(v) for v in history_consumption]
+    residual_by_month = {month: {"income": Decimal("0"), "consumption": Decimal("0")} for month in history_months}
+    for reported_on, tx_type, total in residual_result.all():
+        month = reported_on.replace(day=1)
+        if month not in residual_by_month:
+            continue
+        if tx_type == "credit":
+            residual_by_month[month]["income"] += Decimal(str(total or 0))
+        elif tx_type == "debit":
+            residual_by_month[month]["consumption"] += Decimal(str(total or 0))
+
+    residual_income = [residual_by_month[m]["income"] for m in history_months if residual_by_month[m]["income"] > 0]
+    residual_consumption = [residual_by_month[m]["consumption"] for m in history_months]
+    income_variable_estimate = (
+        Decimal(str(statistics.median([float(v) for v in residual_income]))).quantize(Decimal("0.01"))
+        if len(residual_income) >= 2 else None
+    )
+    variable_values = [float(v) for v in residual_consumption]
     if len(variable_values) >= 2:
         p25 = Decimal(str(statistics.quantiles(variable_values, n=4, method="inclusive")[0]))
         p75 = Decimal(str(statistics.quantiles(variable_values, n=4, method="inclusive")[2]))
@@ -1747,10 +1893,10 @@ async def get_projection(
         p25 = p75 = Decimal(str(variable_values[0]))
     else:
         p25 = p75 = Decimal("0")
-    variable_estimate = (
+    expense_variable_estimate = (
         Decimal(str(statistics.median(variable_values))).quantize(Decimal("0.01"))
         if variable_values
-        else Decimal("0.00")
+        else None
     )
     half_width_1 = ((p75 - p25) / 2).quantize(Decimal("0.01"))
 
@@ -1760,16 +1906,27 @@ async def get_projection(
     installment_totals = await _installment_monthly_totals(
         session, workspace_id, primary_currency, accounting_mode, future_months
     )
-    recurring_totals = await _recurring_monthly_totals(
-        session, workspace_id, primary_currency, future_months
-    )
+    recurring_income: dict[date, Decimal] = {month: Decimal("0") for month in future_months}
+    recurring_expense: dict[date, Decimal] = {month: Decimal("0") for month in future_months}
+    for month in future_months:
+        projections = await _get_recurring_projections(
+            session, workspace_id, month, _month_range(month)[1]
+        )
+        for projection in projections:
+            converted, _ = await convert(
+                session, Decimal(str(projection["amount"])), projection["currency"], primary_currency
+            )
+            if projection["type"] == "credit":
+                recurring_income[month] += converted
+            else:
+                recurring_expense[month] += converted
 
     current_balance = await _total_open_account_balance(session, workspace_id, primary_currency, today)
 
     points: list[ProjectionPoint] = []
     for month_start in actual_months:
         month_end = _month_range(month_start)[1]
-        balance = await _total_open_account_balance(
+        balance = current_balance if month_start == _month_start(today) else await _total_open_account_balance(
             session, workspace_id, primary_currency, month_end - timedelta(days=1)
         )
         points.append(
@@ -1778,6 +1935,10 @@ async def get_projection(
                 balance=balance.quantize(Decimal("0.01")), low=None, high=None,
                 committed=Decimal("0.00"),
                 components=ProjectionComponents(
+                    income_recurring=None, income_variable_estimate=None,
+                    expense_recurring=None, expense_variable_estimate=None,
+                    installments_known=Decimal("0.00"),
+                    component_sources={}, component_windows={},
                     income_expected=Decimal("0.00"), recurring=Decimal("0.00"),
                     installments=Decimal("0.00"), variable_estimate=Decimal("0.00"),
                 ),
@@ -1787,9 +1948,13 @@ async def get_projection(
     running_balance = current_balance
     for n, month_start in enumerate(future_months, start=1):
         installments = installment_totals.get(month_start, Decimal("0"))
-        recurring = recurring_totals.get(month_start, Decimal("0"))
+        income_recurring = recurring_income.get(month_start, Decimal("0"))
+        expense_recurring = recurring_expense.get(month_start, Decimal("0"))
+        recurring = income_recurring - expense_recurring
         committed = installments
-        net = income_expected + recurring - variable_estimate - installments
+        variable_income = income_variable_estimate or Decimal("0")
+        variable_expense = expense_variable_estimate or Decimal("0")
+        net = income_recurring + variable_income - expense_recurring - variable_expense - installments
         running_balance = running_balance + net
         half_width = (half_width_1 * Decimal(str(math.sqrt(n)))).quantize(Decimal("0.01"))
 
@@ -1802,10 +1967,29 @@ async def get_projection(
                 high=(running_balance + half_width).quantize(Decimal("0.01")),
                 committed=committed.quantize(Decimal("0.01")),
                 components=ProjectionComponents(
-                    income_expected=income_expected,
+                    income_recurring=income_recurring.quantize(Decimal("0.01")),
+                    income_variable_estimate=income_variable_estimate,
+                    expense_recurring=expense_recurring.quantize(Decimal("0.01")),
+                    expense_variable_estimate=expense_variable_estimate,
+                    installments_known=installments.quantize(Decimal("0.01")),
+                    component_sources={
+                        "income_recurring": "regras recorrentes ativas",
+                        "income_variable_estimate": "mediana histórica residual",
+                        "expense_recurring": "regras recorrentes ativas",
+                        "expense_variable_estimate": "mediana histórica residual",
+                        "installments_known": "transações conhecidas",
+                    },
+                    component_windows={
+                        "income_recurring": "mês projetado",
+                        "income_variable_estimate": "seis meses completos anteriores",
+                        "expense_recurring": "mês projetado",
+                        "expense_variable_estimate": "seis meses completos anteriores",
+                        "installments_known": "mês de vencimento",
+                    },
+                    income_expected=(income_recurring + (income_variable_estimate or Decimal("0"))).quantize(Decimal("0.01")),
                     recurring=recurring.quantize(Decimal("0.01")),
                     installments=installments.quantize(Decimal("0.01")),
-                    variable_estimate=variable_estimate,
+                    variable_estimate=expense_variable_estimate,
                 ),
             )
         )
@@ -1813,17 +1997,17 @@ async def get_projection(
     assumptions = [
         ProjectionAssumption(
             label="Renda esperada",
-            value=f"{income_expected:.2f}",
-            source=f"Mediana de {len(history_income)} meses de histórico",
+            value=f"{(income_variable_estimate or Decimal('0')):.2f}",
+            source=f"Mediana residual de {len(residual_income)} meses; regras recorrentes separadas",
         ),
         ProjectionAssumption(
             label="Gasto variável estimado",
-            value=f"{variable_estimate:.2f}",
-            source=f"Mediana de {len(history_consumption)} meses de histórico",
+            value=f"{(expense_variable_estimate or Decimal('0')):.2f}",
+            source=f"Mediana residual de {len(residual_consumption)} meses; parcelas separadas",
         ),
         ProjectionAssumption(
-            label="Recorrentes",
-            value="fluxo líquido por mês futuro",
+            label="Receitas e despesas recorrentes",
+            value="componentes separados por tipo",
             source="Regras recorrentes ativas, sem duplicar lançamentos materializados",
         ),
         ProjectionAssumption(

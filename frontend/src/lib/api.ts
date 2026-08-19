@@ -1225,8 +1225,8 @@ export const insights = {
     const { data } = await api.get('/insights/categories', { params: { reference, month } })
     return data
   },
-  nature: async (months = 12): Promise<InsightsEnvelope<NatureData>> => {
-    const { data } = await api.get('/insights/nature', { params: { months } })
+  nature: async (): Promise<InsightsEnvelope<NatureData>> => {
+    const { data } = await api.get('/insights/nature')
     return data
   },
   breakevenTable: async (monthlyYield?: number): Promise<InsightsEnvelope<BreakevenTableData>> => {
