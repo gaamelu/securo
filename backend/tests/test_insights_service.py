@@ -16,16 +16,20 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.category_group import CategoryGroup
 from app.models.goal import Goal
+from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.schemas.insights import PurchaseDecisionRequest
 from app.services.insights_service import (
     _breakeven_net_gain,
+    _credit_utilization_card,
     _historical_reference,
     get_breakeven_table,
+    get_categories,
     get_flow,
     get_goals,
+    get_hygiene,
     get_nature,
     get_projection,
     get_purchase_decision,
@@ -60,6 +64,47 @@ async def _spend(
             effective_date=when,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_categories_use_stored_primary_amount_for_foreign_transactions(
+    session: AsyncSession,
+    test_user: User,
+    test_workspace: Workspace,
+    test_account: Account,
+    test_categories: list[Category],
+):
+    session.add(
+        Transaction(
+            id=uuid.uuid4(),
+            user_id=test_user.id,
+            workspace_id=test_workspace.id,
+            account_id=test_account.id,
+            category_id=test_categories[0].id,
+            amount=Decimal("100.00"),
+            amount_primary=Decimal("520.00"),
+            currency="USD",
+            type="debit",
+            source="manual",
+            status="posted",
+            description="foreign spend with stored conversion",
+            date=date(2026, 8, 10),
+            effective_date=date(2026, 8, 10),
+        )
+    )
+    await session.commit()
+
+    envelope = await get_categories(
+        session,
+        test_workspace.id,
+        "BRL",
+        reference="budget",
+        month=date(2026, 8, 1),
+    )
+
+    assert envelope.data is not None
+    row = next(row for row in envelope.data.rows if row.category_id == str(test_categories[0].id))
+    assert row.amount == Decimal("520.00")
 
 
 @pytest.mark.asyncio
@@ -193,6 +238,104 @@ def test_breakeven_table_has_rows_for_2_through_24_installments():
     assert ns == list(range(2, 25))
     # Sanity: gain grows with more installments (more time invested).
     assert table.rows[0].gain_per_1000 < table.rows[-1].gain_per_1000
+
+
+def test_breakeven_default_yield_is_marked_as_assumed():
+    """The built-in rate is a premise, not an observed sample."""
+    table = get_breakeven_table(monthly_yield=0.01042)
+
+    assert table.yield_basis.method == "assumed"
+    assert table.yield_basis.sample_size == 0
+    assert table.yield_basis.window_days.min == 0
+    assert table.yield_basis.window_days.max == 0
+
+
+@pytest.mark.asyncio
+async def test_credit_utilization_normalizes_positive_connected_card_debt(
+    session: AsyncSession,
+    test_user: User,
+    test_workspace: Workspace,
+    test_connection,
+):
+    """Provider-connected cards store debt as a positive balance.
+
+    Insights must apply the same sign convention as account serialization;
+    otherwise every connected card reports zero utilization.
+    """
+    card = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        connection_id=test_connection.id,
+        external_id="connected-credit-card",
+        name="Connected card",
+        type="credit_card",
+        balance=Decimal("8943.52"),
+        credit_limit=Decimal("14400.00"),
+        currency="BRL",
+        is_closed=False,
+    )
+    session.add(card)
+    await session.commit()
+
+    result = await _credit_utilization_card(session, test_workspace.id, "BRL")
+
+    assert result.available is True
+    assert result.value == Decimal("62.11")
+    assert result.status == "warn"
+
+
+@pytest.mark.asyncio
+async def test_hygiene_excludes_opening_balances_from_categorization_debt(
+    session: AsyncSession,
+    test_user: User,
+    test_workspace: Workspace,
+    test_account: Account,
+):
+    """Opening balances establish account state; they are not uncategorized
+    spending that the hygiene card should ask the user to fix.
+    """
+    session.add_all(
+        [
+            Transaction(
+                id=uuid.uuid4(),
+                user_id=test_user.id,
+                workspace_id=test_workspace.id,
+                account_id=test_account.id,
+                amount=Decimal("5000.00"),
+                currency="BRL",
+                type="credit",
+                source="opening_balance",
+                status="posted",
+                description="Saldo inicial",
+                date=date(2026, 1, 1),
+                effective_date=date(2026, 1, 1),
+            ),
+            Transaction(
+                id=uuid.uuid4(),
+                user_id=test_user.id,
+                workspace_id=test_workspace.id,
+                account_id=test_account.id,
+                amount=Decimal("10.00"),
+                currency="BRL",
+                type="debit",
+                source="manual",
+                status="posted",
+                description="Needs category",
+                date=date(2026, 1, 2),
+                effective_date=date(2026, 1, 2),
+            ),
+        ]
+    )
+    await session.commit()
+
+    data = await get_hygiene(session, test_workspace.id, "BRL")
+
+    assert data.coverage.categorized.done == 0
+    assert data.coverage.categorized.total == 1
+    assert len(data.worst_offenders) == 1
+    assert "Needs category" not in data.worst_offenders[0].label
+    assert "Conta Corrente" in data.worst_offenders[0].label
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +766,7 @@ async def test_goal_with_zero_contribution_is_stalled_with_no_completion_date(
     assert len(rows) == 1
     row = rows[0]
 
+    assert row.current == Decimal("1500.00")
     assert row.estimated_completion is None
     assert row.status == "stalled"
 
@@ -678,6 +822,81 @@ async def test_projection_band_half_width_grows_with_sqrt_n_not_linearly(
     # sqrt(6) ~= 2.449 -- must be well under 6 (linear) and close to sqrt(6).
     assert ratio < 3.0
     assert ratio > 2.0
+
+
+@pytest.mark.asyncio
+async def test_projection_includes_active_recurring_net_flow(
+    session: AsyncSession,
+    test_user: User,
+    test_workspace: Workspace,
+    test_account: Account,
+):
+    """Forward balance must include active recurring income/expenses.
+
+    A recurring salary is already a declared forecast input; treating it as
+    zero makes projection contradict the Recurring screen and current plan.
+    """
+    income_cat = await _income_category(session, user=test_user)
+    future = _shift_month_for_test(date.today(), 1).replace(day=15)
+    session.add(
+        RecurringTransaction(
+            id=uuid.uuid4(),
+            user_id=test_user.id,
+            workspace_id=test_workspace.id,
+            account_id=test_account.id,
+            category_id=income_cat.id,
+            description="Monthly salary",
+            amount=Decimal("500.00"),
+            currency="BRL",
+            type="credit",
+            frequency="monthly",
+            start_date=future,
+            next_occurrence=future,
+            day_of_month=15,
+            is_active=True,
+        )
+    )
+    await session.commit()
+
+    data = await get_projection(session, test_workspace.id, "BRL")
+    next_month = next(
+        point for point in data.points
+        if point.kind == "projected" and point.month == future.strftime("%Y-%m")
+    )
+
+    assert next_month.components.recurring == Decimal("500.00")
+    assert next_month.balance == Decimal("2000.00")
+
+
+@pytest.mark.asyncio
+async def test_projection_income_median_uses_observed_income_months(
+    session: AsyncSession,
+    test_user: User,
+    test_workspace: Workspace,
+    test_account: Account,
+):
+    """Months with no recorded income must not halve the observed income
+    baseline when the history window contains only sparse salary records.
+    """
+    income_cat = await _income_category(session, user=test_user)
+    today = date.today()
+    for delta, amount in ((-1, "1000.00"), (-3, "3000.00")):
+        when = _shift_month_for_test(today, delta).replace(day=10)
+        await _credit(
+            session,
+            user=test_user,
+            workspace=test_workspace,
+            account=test_account,
+            category=income_cat,
+            when=when,
+            amount=amount,
+        )
+    await session.commit()
+
+    data = await get_projection(session, test_workspace.id, "BRL")
+    first_projected = next(point for point in data.points if point.kind == "projected")
+
+    assert first_projected.components.income_expected == Decimal("2000.00")
 
 
 def _shift_month_for_test(d: date, delta: int) -> date:

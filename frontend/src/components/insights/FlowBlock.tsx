@@ -64,6 +64,12 @@ const NODE_PADDING = 14
 const LABEL_MIN_GAP = 26
 const TOP_GUTTER = 16
 
+function flowNodeLabel(node: SankeyGraphNode): string {
+  if (node.kind === 'group') return `Grupo: ${node.label}`
+  if (node.kind === 'category') return `Categoria: ${node.label}`
+  return node.label
+}
+
 export function FlowBlock() {
   const { data: envelope, isLoading } = useQuery<InsightsEnvelope<FlowData>>({
     queryKey: ['insights', 'flow'],
@@ -201,7 +207,7 @@ function FlowContent({ data, currency }: { data: FlowData; currency: string }) {
                     strokeWidth={Math.max(1.5, link.width ?? 1)}
                   >
                     <title>
-                      {(link.target as SankeyGraphNode).label}: {fmtAmount(value)} ({pct})
+                      {flowNodeLabel(link.target as SankeyGraphNode)}: {fmtAmount(value)} ({pct})
                     </title>
                   </path>
                 )
@@ -232,7 +238,7 @@ function FlowContent({ data, currency }: { data: FlowData; currency: string }) {
                       rx={3}
                     >
                       <title>
-                        {n.label}: {fmtAmount(n.numericValue)}
+                        {flowNodeLabel(n)}: {fmtAmount(n.numericValue)}
                       </title>
                     </rect>
                     <text
@@ -243,7 +249,7 @@ function FlowContent({ data, currency }: { data: FlowData; currency: string }) {
                       className={isDeficitNode ? 'fill-destructive' : 'fill-foreground'}
                       style={{ fontSize: 11, fontWeight: isDeficitNode ? 700 : 500 }}
                     >
-                      {n.label}
+                      {flowNodeLabel(n)}
                       <tspan
                         x={labelX}
                         dy={13}
@@ -271,7 +277,7 @@ function FlowContent({ data, currency }: { data: FlowData; currency: string }) {
           <tbody>
             {graph.nodes.map((n) => (
               <tr key={n.id}>
-                <td>{n.label}</td>
+                <td>{flowNodeLabel(n)}</td>
                 <td>{fmtAmount(n.numericValue)}</td>
               </tr>
             ))}

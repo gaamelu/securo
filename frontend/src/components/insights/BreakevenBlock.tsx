@@ -57,8 +57,11 @@ function BreakevenContent({ data }: { data: BreakevenTableData }) {
       <p className="text-xs text-muted-foreground">
         Rendimento mensal:{' '}
         <span className="font-medium text-foreground">{formatRatioPct(Number(yield_basis.monthly_gross), 3)}</span>
-        {' · '}amostra de {yield_basis.sample_size} obs. · {yield_basis.window_days.min}-{yield_basis.window_days.max}{' '}
-        dias
+        {yield_basis.method === 'observed' ? (
+          <>{' · '}amostra de {yield_basis.sample_size} obs. · {yield_basis.window_days.min}-{yield_basis.window_days.max} dias</>
+        ) : (
+          <> · premissa padrão, sem amostra observada</>
+        )}
       </p>
 
       <div className="privacy-sensitive overflow-x-auto">

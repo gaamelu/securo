@@ -382,7 +382,7 @@ class YieldWindowDays(BaseModel):
 
 class YieldBasis(BaseModel):
     monthly_gross: str
-    method: Literal["observed"]
+    method: Literal["observed", "assumed"]
     sample_size: int
     window_days: YieldWindowDays
     range: YieldRange

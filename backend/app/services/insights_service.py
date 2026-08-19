@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Literal, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
@@ -64,7 +64,12 @@ from app.schemas.insights import (
 from app.services._query_filters import counts_as_user_pnl, reporting_date_col
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.credit_card_service import compute_available_credit
-from app.services.dashboard_service import _account_balance_at, _get_open_accounts, _month_range
+from app.services.dashboard_service import (
+    _account_balance_at,
+    _get_open_accounts,
+    _get_recurring_projections,
+    _month_range,
+)
 from app.services.fx_rate_service import convert
 from app.services.report_service import _ACCOUNT_TYPE_COLORS, _ASSET_TYPE_COLORS  # noqa: F401 (color palette reuse)
 
@@ -110,6 +115,19 @@ _MODIFIED_ZSCORE_CONSTANT = 0.6745
 _MODIFIED_ZSCORE_THRESHOLD = 3.5
 
 
+def _transaction_primary_amount(primary_currency: str):
+    """Use stored transaction conversion when FX rate table has no quote.
+
+    `amount_primary` is the authoritative value for manually confirmed or
+    provider-derived foreign-currency rows. Rows without it retain native
+    amount fallback, matching existing live-read behavior.
+    """
+    return case(
+        (Transaction.currency == primary_currency, Transaction.amount),
+        else_=func.coalesce(Transaction.amount_primary, Transaction.amount),
+    )
+
+
 async def _get_trusted_from(session: AsyncSession, workspace_id: uuid.UUID) -> Optional[date]:
     """Return the workspace's `insights.trusted_from` setting, or None.
 
@@ -136,13 +154,17 @@ async def get_hygiene(
     coverage, plus the worst uncategorized offenders by summed amount."""
 
     total_result = await session.execute(
-        select(func.count(Transaction.id)).where(Transaction.workspace_id == workspace_id)
+        select(func.count(Transaction.id)).where(
+            Transaction.workspace_id == workspace_id,
+            Transaction.source != "opening_balance",
+        )
     )
     total_txs = total_result.scalar_one()
 
     categorized_result = await session.execute(
         select(func.count(Transaction.id)).where(
             Transaction.workspace_id == workspace_id,
+            Transaction.source != "opening_balance",
             Transaction.category_id.is_not(None),
         )
     )
@@ -231,8 +253,10 @@ async def _get_worst_offenders(
             Transaction.payee,
             Transaction.currency,
             Transaction.amount,
+            Transaction.amount_primary,
         ).where(
             Transaction.workspace_id == workspace_id,
+            Transaction.source != "opening_balance",
             Transaction.category_id.is_(None),
         )
     )
@@ -242,12 +266,17 @@ async def _get_worst_offenders(
     # to primary currency before ranking, then merge same (month, account,
     # payee) buckets that differ only by currency.
     merged: dict[tuple, dict] = {}
-    for reported_on, account_id, payee, currency, amount in rows:
+    for reported_on, account_id, payee, currency, amount, amount_primary in rows:
         month = reported_on.replace(day=1) if reported_on else None
         key = (month, account_id, payee)
-        converted, _ = await convert(
-            session, Decimal(str(abs(amount or 0))), currency, primary_currency
-        )
+        if currency == primary_currency:
+            converted = Decimal(str(abs(amount or 0)))
+        elif amount_primary is not None:
+            converted = Decimal(str(abs(amount_primary)))
+        else:
+            converted, _ = await convert(
+                session, Decimal(str(abs(amount or 0))), currency, primary_currency
+            )
         bucket = merged.setdefault(key, {"missing": 0, "amount": Decimal("0")})
         bucket["missing"] += 1
         bucket["amount"] += converted
@@ -310,8 +339,7 @@ async def get_categories(
     actual_result = await session.execute(
         select(
             Transaction.category_id,
-            Transaction.currency,
-            func.sum(Transaction.amount).label("total"),
+            func.sum(_transaction_primary_amount(primary_currency)).label("total"),
             func.count(Transaction.id).label("tx_count"),
         )
         .where(
@@ -321,15 +349,14 @@ async def get_categories(
             Transaction.type == "debit",
             counts_as_user_pnl(),
         )
-        .group_by(Transaction.category_id, Transaction.currency)
+        .group_by(Transaction.category_id)
     )
     actual_rows = actual_result.all()
 
     actual_by_category: dict[Optional[uuid.UUID], dict] = {}
-    for category_id, currency, total, tx_count in actual_rows:
-        converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
+    for category_id, total, tx_count in actual_rows:
         bucket = actual_by_category.setdefault(category_id, {"amount": Decimal("0"), "tx_count": 0})
-        bucket["amount"] += converted
+        bucket["amount"] += Decimal(str(total or 0))
         bucket["tx_count"] += tx_count
 
     categories = await _get_categories_meta(session, workspace_id)
@@ -507,8 +534,7 @@ async def _historical_reference(
         result = await session.execute(
             select(
                 Transaction.category_id,
-                Transaction.currency,
-                func.sum(Transaction.amount).label("total"),
+                func.sum(_transaction_primary_amount(primary_currency)).label("total"),
             )
             .where(
                 Transaction.workspace_id == workspace_id,
@@ -517,15 +543,12 @@ async def _historical_reference(
                 date_col < month_end,
                 counts_as_user_pnl(),
             )
-            .group_by(Transaction.category_id, Transaction.currency)
+            .group_by(Transaction.category_id)
         )
         months_seen.add(month_start)
-        for category_id, currency, total in result.all():
-            converted, _ = await convert(
-                session, Decimal(str(total or 0)), currency, primary_currency
-            )
+        for category_id, total in result.all():
             key = (category_id, month_start)
-            per_category_month[key] = per_category_month.get(key, Decimal("0")) + converted
+            per_category_month[key] = per_category_month.get(key, Decimal("0")) + Decimal(str(total or 0))
 
     months_used = len(months_seen)
 
@@ -594,8 +617,7 @@ async def get_nature(
         result = await session.execute(
             select(
                 effective_nature.label("nature"),
-                Transaction.currency,
-                func.sum(Transaction.amount).label("total"),
+                func.sum(_transaction_primary_amount(primary_currency)).label("total"),
             )
             .join(Category, Transaction.category_id == Category.id)
             .where(
@@ -606,15 +628,14 @@ async def get_nature(
                 date_col < month_end,
                 counts_as_user_pnl(),
             )
-            .group_by(effective_nature, Transaction.currency)
+            .group_by(effective_nature)
         )
         rows = result.all()
 
         totals: dict[str, Decimal] = {key: Decimal("0") for key in _NATURE_KEYS}
-        for nature, currency, total in rows:
+        for nature, total in rows:
             key = nature if nature in ("fixed", "variable", "discretionary") else "unclassified"
-            converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
-            totals[key] += converted
+            totals[key] += Decimal(str(total or 0))
 
         month_total = sum(totals.values(), Decimal("0"))
         values = NatureValues(
@@ -720,7 +741,7 @@ def get_breakeven_table(monthly_yield: float = DEFAULT_MONTHLY_YIELD) -> Breakev
 
     yield_basis = YieldBasis(
         monthly_gross=f"{rate:.5f}",
-        method="observed",
+        method="assumed",
         sample_size=0,
         window_days=YieldWindowDays(min=0, max=0),
         range=YieldRange(p25=f"{rate:.5f}", p75=f"{rate:.5f}"),
@@ -924,9 +945,8 @@ async def _monthly_totals(
         select(
             date_col.label("reported_on"),
             Transaction.type,
-            Transaction.currency,
             Category.flow_type,
-            func.sum(Transaction.amount).label("total"),
+            func.sum(_transaction_primary_amount(primary_currency)).label("total"),
         )
         .outerjoin(Category, Transaction.category_id == Category.id)
         .where(
@@ -935,18 +955,17 @@ async def _monthly_totals(
             date_col < window_end,
             counts_as_user_pnl(),
         )
-        .group_by(date_col, Transaction.type, Transaction.currency, Category.flow_type)
+        .group_by(date_col, Transaction.type, Category.flow_type)
     )
 
-    for reported_on, tx_type, currency, flow_type, total in result.all():
+    for reported_on, tx_type, flow_type, total in result.all():
         month_start = reported_on.replace(day=1)
         if month_start not in out:
             continue
-        converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
         if tx_type == "credit" and flow_type != "transfer":
-            out[month_start]["income"] += converted
+            out[month_start]["income"] += Decimal(str(total or 0))
         elif tx_type == "debit" and flow_type in (None, "consumption"):
-            out[month_start]["consumption"] += converted
+            out[month_start]["consumption"] += Decimal(str(total or 0))
 
     return out
 
@@ -975,7 +994,10 @@ async def _installment_monthly_totals(
     window_end = _month_range(max(month_starts))[1]
 
     result = await session.execute(
-        select(date_col.label("reported_on"), Transaction.currency, Transaction.amount)
+        select(
+            date_col.label("reported_on"),
+            _transaction_primary_amount(primary_currency).label("amount_primary_value"),
+        )
         .where(
             Transaction.workspace_id == workspace_id,
             Transaction.total_installments.is_not(None),
@@ -985,13 +1007,43 @@ async def _installment_monthly_totals(
             counts_as_user_pnl(),
         )
     )
-    for reported_on, currency, amount in result.all():
+    for reported_on, amount in result.all():
         month_start = reported_on.replace(day=1)
         if month_start not in out:
             continue
-        converted, _ = await convert(session, Decimal(str(amount or 0)), currency, primary_currency)
-        out[month_start] += converted
+        out[month_start] += Decimal(str(amount or 0))
 
+    return out
+
+
+async def _recurring_monthly_totals(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    primary_currency: str,
+    month_starts: list[date],
+) -> dict[date, Decimal]:
+    """Net active recurring cash flow for each projected month.
+
+    Reuse dashboard's read-only occurrence generator so materialized rows are
+    not counted twice. Transfer-like and ignored recurring rules stay out of
+    P&L, matching the other Insights aggregations.
+    """
+    out: dict[date, Decimal] = {m: Decimal("0") for m in month_starts}
+    for month_start in month_starts:
+        projections = await _get_recurring_projections(
+            session,
+            workspace_id,
+            month_start,
+            _month_range(month_start)[1],
+        )
+        for projection in projections:
+            converted, _ = await convert(
+                session,
+                Decimal(str(projection["amount"])),
+                projection["currency"],
+                primary_currency,
+            )
+            out[month_start] += converted if projection["type"] == "credit" else -converted
     return out
 
 
@@ -1055,8 +1107,7 @@ async def _essential_monthly_cost(
         select(
             date_col.label("reported_on"),
             effective_nature.label("nature"),
-            Transaction.currency,
-            func.sum(Transaction.amount).label("total"),
+            func.sum(_transaction_primary_amount(primary_currency)).label("total"),
         )
         .join(Category, Transaction.category_id == Category.id)
         .where(
@@ -1067,19 +1118,18 @@ async def _essential_monthly_cost(
             date_col < window_end,
             counts_as_user_pnl(),
         )
-        .group_by(date_col, effective_nature, Transaction.currency)
+        .group_by(date_col, effective_nature)
     )
 
     per_month: dict[date, Decimal] = {m: Decimal("0") for m in trailing}
     months_with_activity: set[date] = set()
-    for reported_on, nature, currency, total in result.all():
+    for reported_on, nature, total in result.all():
         month_start = reported_on.replace(day=1)
         if month_start not in per_month:
             continue
         if nature not in ("fixed", "variable"):
             continue
-        converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
-        per_month[month_start] += converted
+        per_month[month_start] += Decimal(str(total or 0))
         months_with_activity.add(month_start)
 
     # A trusted month is one with at least some P&L activity recorded — an
@@ -1344,7 +1394,8 @@ async def _credit_utilization_card(
         if account.credit_limit is None:
             continue
         has_limit_data = True
-        available = compute_available_credit(account.credit_limit, account.balance)
+        current_balance = await _account_balance_at(session, account, date.today())
+        available = compute_available_credit(account.credit_limit, Decimal(str(current_balance)))
         utilized = account.credit_limit - (available if available is not None else account.credit_limit)
         limit_c, _ = await convert(session, account.credit_limit, account.currency, primary_currency)
         util_c, _ = await convert(session, utilized, account.currency, primary_currency)
@@ -1424,7 +1475,7 @@ async def get_flow(
     next_month = _add_month(target_month)
 
     income_result = await session.execute(
-        select(Transaction.currency, func.sum(Transaction.amount))
+        select(func.sum(_transaction_primary_amount(primary_currency)))
         .outerjoin(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.workspace_id == workspace_id,
@@ -1434,12 +1485,9 @@ async def get_flow(
             counts_as_user_pnl(),
             func.coalesce(Category.flow_type, "income") != "transfer",
         )
-        .group_by(Transaction.currency)
     )
     income_total = Decimal("0")
-    for currency, total in income_result.all():
-        converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
-        income_total += converted
+    income_total += Decimal(str(income_result.scalar_one() or 0))
 
     spend_result = await session.execute(
         select(
@@ -1447,8 +1495,7 @@ async def get_flow(
             Category.name,
             Category.color,
             Category.group_id,
-            Transaction.currency,
-            func.sum(Transaction.amount).label("total"),
+            func.sum(_transaction_primary_amount(primary_currency)).label("total"),
         )
         .join(Category, Transaction.category_id == Category.id)
         .where(
@@ -1459,22 +1506,21 @@ async def get_flow(
             date_col < next_month,
             counts_as_user_pnl(),
         )
-        .group_by(Category.id, Category.name, Category.color, Category.group_id, Transaction.currency)
+        .group_by(Category.id, Category.name, Category.color, Category.group_id)
     )
     rows = spend_result.all()
 
     per_category: dict[uuid.UUID, dict] = {}
-    for cat_id, name, color, group_id, currency, total in rows:
-        converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
+    for cat_id, name, color, group_id, total in rows:
         bucket = per_category.setdefault(
             cat_id, {"name": name, "color": color, "group_id": group_id, "amount": Decimal("0")}
         )
-        bucket["amount"] += converted
+        bucket["amount"] += Decimal(str(total or 0))
 
     group_meta = await _category_group_meta(session, workspace_id)
 
     saved_result = await session.execute(
-        select(Transaction.currency, func.sum(Transaction.amount))
+        select(func.sum(_transaction_primary_amount(primary_currency)))
         .join(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.workspace_id == workspace_id,
@@ -1484,12 +1530,8 @@ async def get_flow(
             date_col < next_month,
             counts_as_user_pnl(),
         )
-        .group_by(Transaction.currency)
     )
-    saved_total = Decimal("0")
-    for currency, total in saved_result.all():
-        converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
-        saved_total += converted
+    saved_total = Decimal(str(saved_result.scalar_one() or 0))
 
     gastos_total = sum((b["amount"] for b in per_category.values()), Decimal("0"))
     saldo = income_total - gastos_total - saved_total
@@ -1617,7 +1659,11 @@ async def get_projection(
     history_totals = await _monthly_totals(
         session, workspace_id, primary_currency, accounting_mode, history_months
     )
-    history_income = [history_totals[m]["income"] for m in history_months]
+    history_income = [
+        history_totals[m]["income"]
+        for m in history_months
+        if history_totals[m]["income"] > 0
+    ]
     history_consumption = [history_totals[m]["consumption"] for m in history_months]
 
     income_expected = (
@@ -1644,6 +1690,9 @@ async def get_projection(
     installment_totals = await _installment_monthly_totals(
         session, workspace_id, primary_currency, accounting_mode, future_months
     )
+    recurring_totals = await _recurring_monthly_totals(
+        session, workspace_id, primary_currency, future_months
+    )
 
     current_balance = await _total_open_account_balance(session, workspace_id, primary_currency, today)
 
@@ -1667,8 +1716,9 @@ async def get_projection(
     running_balance = current_balance
     for n, month_start in enumerate(future_months, start=1):
         installments = installment_totals.get(month_start, Decimal("0"))
+        recurring = recurring_totals.get(month_start, Decimal("0"))
         committed = installments
-        net = income_expected - variable_estimate - installments
+        net = income_expected + recurring - variable_estimate - installments
         running_balance = running_balance + net
 
         half_width = (half_width_1 * Decimal(str(math.sqrt(n)))).quantize(Decimal("0.01"))
@@ -1685,7 +1735,7 @@ async def get_projection(
                 committed=committed.quantize(Decimal("0.01")),
                 components=ProjectionComponents(
                     income_expected=income_expected,
-                    recurring=Decimal("0.00"),
+                    recurring=recurring.quantize(Decimal("0.01")),
                     installments=installments.quantize(Decimal("0.01")),
                     variable_estimate=variable_estimate,
                 ),
@@ -1702,6 +1752,11 @@ async def get_projection(
             label="Gasto variável estimado",
             value=f"{variable_estimate:.2f}",
             source=f"Mediana de {len(history_consumption)} meses de histórico",
+        ),
+        ProjectionAssumption(
+            label="Recorrentes",
+            value="fluxo líquido por mês futuro",
+            source="Regras recorrentes ativas, sem duplicar lançamentos materializados",
         ),
         ProjectionAssumption(
             label="Parcelas conhecidas",
@@ -1770,8 +1825,16 @@ async def _goal_row(
 ) -> GoalRow:
     current = goal.current_amount_primary if goal.current_amount_primary is not None else goal.current_amount
     target = goal.target_amount_primary if goal.target_amount_primary is not None else goal.target_amount
+    if goal.tracking_type == "account" and goal.account_id is not None:
+        account = await session.get(Account, goal.account_id)
+        if account is not None:
+            account_balance = await _account_balance_at(session, account, today)
+            current, _ = await convert(
+                session, Decimal(str(account_balance)), account.currency, primary_currency
+            )
     if goal.currency != primary_currency and goal.current_amount_primary is None:
-        current, _ = await convert(session, goal.current_amount, goal.currency, primary_currency)
+        if not (goal.tracking_type == "account" and goal.account_id is not None):
+            current, _ = await convert(session, goal.current_amount, goal.currency, primary_currency)
     if goal.currency != primary_currency and goal.target_amount_primary is None:
         target, _ = await convert(session, goal.target_amount, goal.currency, primary_currency)
 
@@ -1891,7 +1954,12 @@ async def _goal_account_contributions(
     window_end = _month_range(month_starts[-1])[1]
 
     result = await session.execute(
-        select(date_col.label("reported_on"), Transaction.currency, Transaction.amount)
+        select(
+            date_col.label("reported_on"),
+            Transaction.currency,
+            Transaction.amount,
+            Transaction.amount_primary,
+        )
         .where(
             Transaction.account_id == account_id,
             Transaction.type == "credit",
@@ -1901,11 +1969,16 @@ async def _goal_account_contributions(
         )
     )
     per_month: dict[date, Decimal] = {m: Decimal("0") for m in month_starts}
-    for reported_on, currency, amount in result.all():
+    for reported_on, currency, amount, amount_primary in result.all():
         month_start = reported_on.replace(day=1)
         if month_start not in per_month:
             continue
-        converted, _ = await convert(session, Decimal(str(amount or 0)), currency, primary_currency)
+        if currency == primary_currency:
+            converted = Decimal(str(amount or 0))
+        elif amount_primary is not None:
+            converted = Decimal(str(amount_primary))
+        else:
+            converted, _ = await convert(session, Decimal(str(amount or 0)), currency, primary_currency)
         per_month[month_start] += converted
     return list(per_month.values())
 
@@ -2008,8 +2081,7 @@ async def _overspend_alerts(
         select(
             Transaction.category_id,
             date_col.label("reported_on"),
-            Transaction.currency,
-            func.sum(Transaction.amount).label("total"),
+            func.sum(_transaction_primary_amount(primary_currency)).label("total"),
         )
         .where(
             Transaction.workspace_id == workspace_id,
@@ -2018,17 +2090,16 @@ async def _overspend_alerts(
             date_col < window_end,
             counts_as_user_pnl(),
         )
-        .group_by(Transaction.category_id, date_col, Transaction.currency)
+        .group_by(Transaction.category_id, date_col)
     )
 
     per_category_month: dict[tuple, Decimal] = {}
-    for category_id, reported_on, currency, total in result.all():
+    for category_id, reported_on, total in result.all():
         month_start = reported_on.replace(day=1)
         if month_start not in all_months:
             continue
-        converted, _ = await convert(session, Decimal(str(total or 0)), currency, primary_currency)
         key = (category_id, month_start)
-        per_category_month[key] = per_category_month.get(key, Decimal("0")) + converted
+        per_category_month[key] = per_category_month.get(key, Decimal("0")) + Decimal(str(total or 0))
 
     categories = await _get_categories_meta(session, workspace_id)
 
@@ -2148,4 +2219,3 @@ async def _goal_off_track_alerts(
                 )
             )
     return alerts
-
