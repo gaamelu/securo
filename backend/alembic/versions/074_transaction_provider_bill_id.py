@@ -25,36 +25,52 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "transactions",
-        sa.Column(
-            "provider_bill_id",
-            postgresql.UUID(as_uuid=True),
-            nullable=True,
-        ),
-    )
-    op.create_foreign_key(
-        "fk_transactions_provider_bill_id_credit_card_bills",
-        "transactions",
-        "credit_card_bills",
-        ["provider_bill_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
-    op.create_index(
-        "ix_transactions_provider_bill_id",
-        "transactions",
-        ["provider_bill_id"],
-    )
-    op.add_column(
-        "transactions",
-        sa.Column(
-            "provider_bill_membership_known",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.false(),
-        ),
-    )
+    # local/live previously applied this schema under revisions 071/072.
+    # Those IDs now belong to public migrations, so tolerate the already
+    # materialized columns, constraint, and index while advancing Alembic.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {column["name"] for column in inspector.get_columns("transactions")}
+    if "provider_bill_id" not in columns:
+        op.add_column(
+            "transactions",
+            sa.Column(
+                "provider_bill_id",
+                postgresql.UUID(as_uuid=True),
+                nullable=True,
+            ),
+        )
+        columns.add("provider_bill_id")
+
+    foreign_key_name = "fk_transactions_provider_bill_id_credit_card_bills"
+    foreign_keys = {
+        foreign_key.get("name") for foreign_key in inspector.get_foreign_keys("transactions")
+    }
+    if foreign_key_name not in foreign_keys:
+        op.create_foreign_key(
+            foreign_key_name,
+            "transactions",
+            "credit_card_bills",
+            ["provider_bill_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+
+    index_name = "ix_transactions_provider_bill_id"
+    indexes = {index.get("name") for index in inspector.get_indexes("transactions")}
+    if index_name not in indexes:
+        op.create_index(index_name, "transactions", ["provider_bill_id"])
+
+    if "provider_bill_membership_known" not in columns:
+        op.add_column(
+            "transactions",
+            sa.Column(
+                "provider_bill_membership_known",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.false(),
+            ),
+        )
     op.execute(
         """
         UPDATE transactions
@@ -68,11 +84,22 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("transactions", "provider_bill_membership_known")
-    op.drop_index("ix_transactions_provider_bill_id", table_name="transactions")
-    op.drop_constraint(
-        "fk_transactions_provider_bill_id_credit_card_bills",
-        "transactions",
-        type_="foreignkey",
-    )
-    op.drop_column("transactions", "provider_bill_id")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {column["name"] for column in inspector.get_columns("transactions")}
+    if "provider_bill_membership_known" in columns:
+        op.drop_column("transactions", "provider_bill_membership_known")
+    indexes = {index.get("name") for index in inspector.get_indexes("transactions")}
+    if "ix_transactions_provider_bill_id" in indexes:
+        op.drop_index("ix_transactions_provider_bill_id", table_name="transactions")
+    foreign_keys = {
+        foreign_key.get("name") for foreign_key in inspector.get_foreign_keys("transactions")
+    }
+    if "fk_transactions_provider_bill_id_credit_card_bills" in foreign_keys:
+        op.drop_constraint(
+            "fk_transactions_provider_bill_id_credit_card_bills",
+            "transactions",
+            type_="foreignkey",
+        )
+    if "provider_bill_id" in columns:
+        op.drop_column("transactions", "provider_bill_id")

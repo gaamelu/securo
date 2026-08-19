@@ -23,15 +23,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "accounts",
-        sa.Column(
-            "last_bill_reconciliation_at",
-            sa.DateTime(timezone=True),
-            nullable=True,
-        ),
-    )
+    # local/live previously applied this schema under revision 071. The
+    # public 071/072 migrations later occupied those IDs, so this branch
+    # re-chains the same schema as 073. Keep upgrade compatible with that
+    # existing database instead of attempting to add the column twice.
+    bind = op.get_bind()
+    columns = {column["name"] for column in sa.inspect(bind).get_columns("accounts")}
+    if "last_bill_reconciliation_at" not in columns:
+        op.add_column(
+            "accounts",
+            sa.Column(
+                "last_bill_reconciliation_at",
+                sa.DateTime(timezone=True),
+                nullable=True,
+            ),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("accounts", "last_bill_reconciliation_at")
+    bind = op.get_bind()
+    columns = {column["name"] for column in sa.inspect(bind).get_columns("accounts")}
+    if "last_bill_reconciliation_at" in columns:
+        op.drop_column("accounts", "last_bill_reconciliation_at")
