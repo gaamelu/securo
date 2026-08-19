@@ -189,7 +189,13 @@ function closeDateForBill(billDueDate: string, closeDay: number | null | undefin
 function rangeForBill(
   bill: CreditCardBill,
   prevBill: CreditCardBill | null,
+  closeDay: number | null | undefined,
 ): { start: string; end: string } {
+  if (closeDay) {
+    const closeDate = closeDateForBill(bill.due_date, closeDay)
+    const reference = addDays(parseISO(closeDate + 'T00:00:00'), -1)
+    return creditCardCycleBoundaries(closeDay, reference)
+  }
   const end = bill.due_date
   const start = prevBill
     ? format(addDays(parseISO(prevBill.due_date + 'T00:00:00'), 1), 'yyyy-MM-dd')
@@ -285,6 +291,8 @@ export default function AccountDetailPage() {
   const [filterFrom, setFilterFrom] = useState(defaultFrom)
   const [filterTo, setFilterTo] = useState(defaultTo)
   const [showPrimary, setShowPrimary] = useState(false)
+  // -1 sentinel: "center window on the open bill" (resolved once allCycles exists).
+  const [timelineWindowStart, setTimelineWindowStart] = useState(-1)
   const filterTouched = useRef(false)
   const handleFilterFromChange = (v: string) => { filterTouched.current = true; setFilterFrom(v) }
   const handleFilterToChange = (v: string) => { filterTouched.current = true; setFilterTo(v) }
@@ -300,7 +308,7 @@ export default function AccountDetailPage() {
       if (newIdx >= 0 && newIdx < billsAsc.length) {
         const next = billsAsc[newIdx]
         const prev = newIdx > 0 ? billsAsc[newIdx - 1] : null
-        const { start, end } = rangeForBill(next, prev)
+        const { start, end } = rangeForBill(next, prev, account?.statement_close_day)
         setFilterFrom(start)
         setFilterTo(end)
         return
@@ -350,13 +358,91 @@ export default function AccountDetailPage() {
     if (!bills) return []
     return [...bills].sort((a, b) => a.due_date.localeCompare(b.due_date))
   }, [bills])
-  // The bill, if any, the active filter currently corresponds to. We always
-  // set filterTo = bill.due_date when navigating to a bill, so the lookup is
-  // a simple equality check.
+  // Full cycle history + forward projection (oldest → newest) for the bill
+  // timeline strip. When we have a bills feed (Pluggy Regulado, etc.) cycles
+  // are driven directly by bills — total comes from the summary endpoint,
+  // label from the bill's actual due_date — so the bars match the bank
+  // statement-for-statement even when the close day shifts month to month
+  // (issue #92). Otherwise we fall back to local cycle math. The strip
+  // itself only shows a STRIP_SIZE window of this list (see timelineCycles
+  // below); allCycles exists so the window can be navigated with ‹ › arrows.
+  // Declared before activeBill because activeBill matches on cycle [start,
+  // end] rather than due_date (the two only coincide when statement_close_day
+  // is unset — with a close day, a cycle's end is the day before the next
+  // close, not the bill's due date).
+  const allCycles: { start: string; end: string; bill?: CreditCardBill }[] = useMemo(() => {
+    if (!account || account.type !== 'credit_card') return []
+
+    if (billsAsc.length > 0) {
+      const cycles: { start: string; end: string; bill?: CreditCardBill }[] = []
+      for (let i = 0; i < billsAsc.length; i++) {
+        const b = billsAsc[i]
+        const prev = i > 0 ? billsAsc[i - 1] : null
+        cycles.push({ ...rangeForBill(b, prev, account.statement_close_day), bill: b })
+      }
+      if (account.statement_close_day) {
+        // Fill any gap between the newest known bill and today's in-progress
+        // cycle (provider outages, newly connected accounts) so the strip
+        // has no missing months.
+        const todayCycle = creditCardCycleBoundaries(account.statement_close_day, new Date())
+        const lastEnd = cycles[cycles.length - 1].end
+        let nextStart = format(addDays(parseISO(lastEnd + 'T00:00:00'), 1), 'yyyy-MM-dd')
+        while (nextStart < todayCycle.start) {
+          const tempRef = parseISO(nextStart + 'T00:00:00')
+          const c = creditCardCycleBoundaries(account.statement_close_day, tempRef)
+          cycles.push({ start: nextStart, end: c.end })
+          nextStart = format(addDays(parseISO(c.end + 'T00:00:00'), 1), 'yyyy-MM-dd')
+        }
+
+        // The current in-progress cycle (no bill yet) is ALWAYS a trailing
+        // bar when the account has any bills — charges accrue to the next
+        // bill the moment the previous one closes, regardless of whether
+        // its due date has passed. Skipping it hides the user's currently-
+        // accumulating spend from the strip until ~10 days into the cycle.
+        const todayCycleDueDate = dueDateForCycle(todayCycle.end, account.payment_due_day)
+        const alreadyExists = cycles.some(c => c.start === todayCycle.start && c.end === todayCycle.end)
+        // A manual/projection bill can have a due-date range that differs
+        // slightly from the cycle-math range. It is still the same invoice,
+        // so key the de-duplication on its due date as well.
+        const hasBillForTodayCycle = billsAsc.some(bill => bill.due_date === todayCycleDueDate)
+        if (!alreadyExists && !hasBillForTodayCycle) {
+          cycles.push(todayCycle)
+        }
+
+        // A provider usually publishes only the current and past bills. Keep
+        // the timeline useful for installments already committed to later
+        // cycles instead of ending at the open invoice — 12 months covers a
+        // full annual installment plan; months with nothing planned just
+        // show zero.
+        cycles.sort((a, b) => a.start.localeCompare(b.start))
+        let futureStart = format(addDays(parseISO(cycles[cycles.length - 1].end + 'T00:00:00'), 1), 'yyyy-MM-dd')
+        for (let i = 0; i < 12; i++) {
+          const futureCycle = creditCardCycleBoundaries(account.statement_close_day, parseISO(futureStart + 'T00:00:00'))
+          cycles.push(futureCycle)
+          futureStart = format(addDays(parseISO(futureCycle.end + 'T00:00:00'), 1), 'yyyy-MM-dd')
+        }
+      }
+      return cycles
+    }
+
+    if (!account.statement_close_day) return []
+    const cycles: { start: string; end: string }[] = []
+    let ref = new Date()
+    for (let i = 0; i < 24; i++) {
+      const c = creditCardCycleBoundaries(account.statement_close_day, ref)
+      cycles.unshift(c)
+      ref = new Date(parseISO(c.start + 'T00:00:00').getTime() - 86400000)
+    }
+    return cycles
+  }, [account, billsAsc])
+
+  // The bill, if any, the active filter currently corresponds to. Matched by
+  // cycle [start, end] rather than due_date — the two only coincide when
+  // statement_close_day is unset.
   const activeBill = useMemo(() => {
-    if (!billsAsc.length) return null
-    return billsAsc.find(b => b.due_date === filterTo) ?? null
-  }, [billsAsc, filterTo])
+    if (!filterFrom || !filterTo) return null
+    return allCycles.find(c => c.start === filterFrom && c.end === filterTo)?.bill ?? null
+  }, [allCycles, filterFrom, filterTo])
   // True when the user is on the trailing in-progress cycle (CC has bills,
   // but the current view doesn't match any of them). Backend uses this to
   // exclude already-billed txs from the cycle window so they don't double-
@@ -378,7 +464,7 @@ export default function AccountDetailPage() {
         if (upcoming) {
           const idx = billsAsc.indexOf(upcoming)
           const prev = idx > 0 ? billsAsc[idx - 1] : null
-          const { start, end } = rangeForBill(upcoming, prev)
+          const { start, end } = rangeForBill(upcoming, prev, account.statement_close_day)
           setFilterFrom(start)
           setFilterTo(end)
           return
@@ -442,47 +528,51 @@ export default function AccountDetailPage() {
     enabled: !!id && !!previousCycle,
   })
 
-  // Last 6 cycles (oldest → newest) for the bill timeline strip.
-  // When we have a bills feed (Pluggy Regulado, etc.) the strip is driven
-  // directly by bills — total comes from bill.total_amount, label from the
-  // bill's actual due_date — so the bars match the bank statement-for-statement
-  // even when the close day shifts month to month (issue #92). Otherwise we
-  // fall back to local cycle math.
-  const timelineCycles: { start: string; end: string; bill?: CreditCardBill }[] = useMemo(() => {
-    if (!account || account.type !== 'credit_card') return []
+  const STRIP_SIZE = isMobile ? 5 : 7
+  const STRIP_HALF = Math.floor(STRIP_SIZE / 2)
 
-    if (billsAsc.length > 0) {
-      const cycles: { start: string; end: string; bill?: CreditCardBill }[] = []
-      for (let i = 0; i < billsAsc.length; i++) {
-        const b = billsAsc[i]
-        const prev = i > 0 ? billsAsc[i - 1] : null
-        cycles.push({ ...rangeForBill(b, prev), bill: b })
-      }
-      // The current in-progress cycle (no bill yet) is ALWAYS a trailing
-      // bar when the account has any bills — charges accrue to the next
-      // bill the moment the previous one closes, regardless of whether
-      // its due date has passed. Skipping it hides the user's currently-
-      // accumulating spend from the strip until ~10 days into the cycle.
-      // Use the cycle-math range [prev_close, next_close-1] so a tx dated
-      // on the previous close (which belongs to the NEXT cycle per
-      // Brazilian convention) shows up. The backend's `bill_id IS NULL`
-      // filter prevents already-billed txs from leaking in.
-      if (account.statement_close_day) {
-        cycles.push(creditCardCycleBoundaries(account.statement_close_day, new Date()))
-      }
-      return cycles.slice(isMobile ? -4 : -6)
-    }
+  // Index of the "open" cycle — the one containing today (bill not yet
+  // issued or not yet due), so the strip centers on what the user is
+  // currently accumulating rather than on the oldest bill-less cycle.
+  // Falls back to the next bill whose due date hasn't passed, then to the
+  // trailing cycle. Used to center the strip.
+  const openBillIdx = useMemo(() => {
+    if (!allCycles.length) return -1
+    const todayStr = format(new Date(), 'yyyy-MM-dd')
+    const containingToday = allCycles.findIndex(c => c.start <= todayStr && todayStr <= c.end)
+    if (containingToday >= 0) return containingToday
+    const nextDue = allCycles.findIndex(c => !!c.bill && c.bill.due_date >= todayStr)
+    return nextDue >= 0 ? nextDue : allCycles.length - 1
+  }, [allCycles])
 
-    if (!account.statement_close_day) return []
-    const cycles: { start: string; end: string }[] = []
-    let ref = new Date()
-    for (let i = 0; i < (isMobile ? 4 : 6); i++) {
-      const c = creditCardCycleBoundaries(account.statement_close_day, ref)
-      cycles.unshift(c)
-      ref = new Date(parseISO(c.start + 'T00:00:00').getTime() - 86400000)
+  // Resolved window start: -1 sentinel means "center on the open bill".
+  const resolvedWindowStart = useMemo(() => {
+    if (allCycles.length === 0) return 0
+    const maxStart = Math.max(0, allCycles.length - STRIP_SIZE)
+    if (timelineWindowStart < 0) {
+      return Math.min(maxStart, Math.max(0, openBillIdx - STRIP_HALF))
     }
-    return cycles
-  }, [account, billsAsc, isMobile])
+    return Math.max(0, Math.min(timelineWindowStart, maxStart))
+  }, [allCycles, timelineWindowStart, openBillIdx, STRIP_SIZE, STRIP_HALF])
+
+  // Navigable window of STRIP_SIZE cycles shown in the bill timeline strip.
+  const timelineCycles = useMemo(
+    () => allCycles.slice(resolvedWindowStart, resolvedWindowStart + STRIP_SIZE),
+    [allCycles, resolvedWindowStart, STRIP_SIZE],
+  )
+
+  // Keep the active cycle visible when the user navigates with the top ‹ › arrows.
+  useEffect(() => {
+    if (!allCycles.length) return
+    const idx = allCycles.findIndex(c => c.start === filterFrom && c.end === filterTo)
+    if (idx === -1) return
+    if (idx < resolvedWindowStart || idx >= resolvedWindowStart + STRIP_SIZE) {
+      const maxStart = Math.max(0, allCycles.length - STRIP_SIZE)
+      setTimelineWindowStart(Math.min(maxStart, Math.max(0, idx - STRIP_HALF)))
+    }
+    // Only react to filter/allCycles changes, not resolvedWindowStart.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterFrom, filterTo, allCycles])
 
   const timelineQueries = useQueries({
     queries: timelineCycles.map(c => ({
@@ -1063,7 +1153,7 @@ export default function AccountDetailPage() {
         </div>
       )}
 
-      {/* Bill timeline (last 6 cycles) — only for CC with cycle metadata */}
+      {/* Bill timeline strip — navigable with ‹ › arrows, shows closed/open/future cycles */}
       {isCreditCard && timelineCycles.length > 0 && (() => {
         const dfLocale = resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language)
         const totals = timelineQueries.map((q, i) => {
@@ -1080,48 +1170,97 @@ export default function AccountDetailPage() {
           }
         })
         const max = Math.max(1, ...totals.map(c => c.total))
+        const canGoBack = resolvedWindowStart > 0
+        const canGoForward = resolvedWindowStart + STRIP_SIZE < allCycles.length
+
+        // Bill status for color coding: closed (already due), open (the
+        // next bill due — what the user is here to pay), future (projected,
+        // not yet issued by the provider).
+        const todayStr = format(new Date(), 'yyyy-MM-dd')
+        const nextDueBillDate = billsAsc.find(b => b.due_date >= todayStr)?.due_date
+        const getBillStatus = (c: (typeof totals)[0]): 'closed' | 'open' | 'future' => {
+          if (!c.bill) return c.start <= todayStr ? 'open' : 'future' // in-progress vs projected
+          if (c.bill.due_date < todayStr) return 'closed'
+          if (c.bill.due_date === nextDueBillDate) return 'open'
+          return 'future'
+        }
+        const barColor = (status: 'closed' | 'open' | 'future', isCurrent: boolean, hasTotal: boolean) => {
+          if (isCurrent) return 'bg-rose-500'
+          if (!hasTotal) return 'bg-muted-foreground/20'
+          if (status === 'closed') return 'bg-slate-300 dark:bg-slate-500/60 group-hover:bg-slate-400'
+          if (status === 'open') return 'bg-amber-400 dark:bg-amber-400/70 group-hover:bg-amber-500'
+          return 'bg-blue-300 dark:bg-blue-500/40 group-hover:bg-blue-400'
+        }
+        const labelColor = (status: 'closed' | 'open' | 'future', isCurrent: boolean) => {
+          if (isCurrent) return 'text-rose-700 dark:text-rose-400'
+          if (status === 'open') return 'text-amber-600 dark:text-amber-400 font-semibold'
+          if (status === 'future') return 'text-blue-600 dark:text-blue-400'
+          return 'text-muted-foreground'
+        }
+
         return (
           <div className="bg-card rounded-xl border border-border shadow-sm p-3 sm:p-4 mb-6">
-            <div className="flex items-end gap-2 sm:gap-3 overflow-x-auto pb-1">
-              {totals.map((c, i) => {
-                const isCurrent = c.start === filterFrom && c.end === filterTo
-                const heightPct = c.total > 0 ? Math.max(8, (c.total / max) * 100) : 4
-                // When a bill anchors this cycle, label by the bill's actual
-                // month (handles dynamic close days). Otherwise fall back to
-                // the cycle-math label that maps close → due → month.
-                const label = c.bill
-                  ? format(parseISO(c.bill.due_date + 'T00:00:00'), 'MMM yyyy', { locale: dfLocale })
-                  : creditCardCycleLabel(c.end, account.payment_due_day, i18n.language)
-                return (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => {
-                      filterTouched.current = true
-                      setFilterFrom(c.start)
-                      setFilterTo(c.end)
-                    }}
-                    className={`group flex-1 min-w-[60px] flex flex-col items-center gap-1.5 px-1 py-2 rounded-lg transition-colors ${isCurrent ? 'bg-rose-50 dark:bg-rose-500/10' : 'hover:bg-muted/50'}`}
-                  >
-                    <div className="h-12 w-full flex items-end justify-center">
-                      {c.loading ? (
-                        <div className="w-6 h-3 rounded-sm bg-muted animate-pulse" />
-                      ) : (
-                        <div
-                          className={`w-6 rounded-sm transition-colors ${isCurrent ? 'bg-rose-500' : c.total > 0 ? 'bg-rose-300 dark:bg-rose-500/40 group-hover:bg-rose-400' : 'bg-muted-foreground/20'}`}
-                          style={{ height: `${heightPct}%` }}
-                        />
-                      )}
-                    </div>
-                    <p className={`text-[10px] sm:text-xs font-medium capitalize ${isCurrent ? 'text-rose-700 dark:text-rose-400' : 'text-muted-foreground'}`}>
-                      {label}
-                    </p>
-                    <p className={`text-[10px] sm:text-xs font-semibold tabular-nums ${isCurrent ? 'text-foreground' : 'text-muted-foreground'}`}>
-                      {c.loading ? '—' : mask(formatCurrency(c.total, account.currency, locale))}
-                    </p>
-                  </button>
-                )
-              })}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setTimelineWindowStart(resolvedWindowStart - 1)}
+                disabled={!canGoBack}
+                className="h-8 w-6 flex-shrink-0 flex items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground hover:bg-muted disabled:opacity-20 disabled:cursor-not-allowed"
+                title={t('accounts.previousMonths')}
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <div className="flex items-end gap-2 sm:gap-3 flex-1 pb-1">
+                {totals.map((c, i) => {
+                  const isCurrent = c.start === filterFrom && c.end === filterTo
+                  const heightPct = c.total > 0 ? Math.max(8, (c.total / max) * 100) : 4
+                  const status = getBillStatus(c)
+                  // When a bill anchors this cycle, label by the bill's actual
+                  // month (handles dynamic close days). Otherwise fall back to
+                  // the cycle-math label that maps close → due → month.
+                  const label = c.bill
+                    ? format(parseISO(c.bill.due_date + 'T00:00:00'), 'MMM yyyy', { locale: dfLocale })
+                    : creditCardCycleLabel(c.end, account.payment_due_day, i18n.language)
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        filterTouched.current = true
+                        setFilterFrom(c.start)
+                        setFilterTo(c.end)
+                      }}
+                      className={`group flex-1 min-w-[52px] flex flex-col items-center gap-1.5 px-1 py-2 rounded-lg transition-colors ${isCurrent ? 'bg-rose-50 dark:bg-rose-500/10' : 'hover:bg-muted/50'}`}
+                    >
+                      <div className="h-12 w-full flex items-end justify-center">
+                        {c.loading ? (
+                          <div className="w-6 h-3 rounded-sm bg-muted animate-pulse" />
+                        ) : (
+                          <div
+                            className={`w-6 rounded-sm transition-colors ${barColor(status, isCurrent, c.total > 0)}`}
+                            style={{ height: `${heightPct}%` }}
+                          />
+                        )}
+                      </div>
+                      <p className={`text-[10px] sm:text-xs capitalize ${labelColor(status, isCurrent)}`}>
+                        {label}
+                      </p>
+                      <p className={`text-[10px] sm:text-xs font-semibold tabular-nums ${isCurrent ? 'text-foreground' : 'text-muted-foreground'}`}>
+                        {c.loading ? '—' : mask(formatCurrency(c.total, account.currency, locale))}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => setTimelineWindowStart(resolvedWindowStart + 1)}
+                disabled={!canGoForward}
+                className="h-8 w-6 flex-shrink-0 flex items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground hover:bg-muted disabled:opacity-20 disabled:cursor-not-allowed"
+                title={t('accounts.nextMonths')}
+              >
+                <ChevronRight size={14} />
+              </button>
             </div>
           </div>
         )
@@ -1299,6 +1438,31 @@ export default function AccountDetailPage() {
         const utilized = limit != null ? cycleBillTotal : null
         const rawPct = limit != null && limit > 0 && utilized != null ? (utilized / limit) * 100 : null
         const pct = rawPct != null ? Math.min(100, rawPct) : null
+        // Other bills' committed share: the limit is shared across every bill
+        // not yet due (open cycle plus future installments already billed),
+        // not just the one currently in view — a 20% bar here can hide an
+        // 80%-committed card if the other bills aren't shown. Only makes
+        // sense while viewing a bill that hasn't come due yet (current or
+        // future) — for a historical bill, "how much do the other bills
+        // commit" answers a question about a limit snapshot that no longer
+        // applies to that past month. Bills whose due_date has passed are
+        // excluded — there's no is_paid column, but a past-due bill is
+        // either paid (freed the limit) or delinquent (a separate problem
+        // this bar shouldn't obscure with a permanently-stuck-high
+        // percentage). total_amount is the bank's own snapshot in the
+        // bill's native currency — skipped in "primary currency" mode for
+        // foreign-currency cards since summing native and converted totals
+        // would be meaningless without per-bill FX rates.
+        const todayStr = format(new Date(), 'yyyy-MM-dd')
+        const isUpcomingCycle = isInProgressCycle || (activeBill != null && activeBill.due_date >= todayStr)
+        const otherBillsTotal = showPrimary || !isUpcomingCycle
+          ? 0
+          : billsAsc
+            .filter(b => b.id !== activeBill?.id && b.due_date >= todayStr && b.currency === account.currency)
+            .reduce((sum, b) => sum + Number(b.total_amount), 0)
+        const otherPct = limit != null && limit > 0 ? Math.min(100 - (pct ?? 0), (otherBillsTotal / limit) * 100) : null
+        const committedTotal = (utilized ?? 0) + otherBillsTotal
+        const committedPct = limit != null && limit > 0 ? (committedTotal / limit) * 100 : null
         return (
           <div className="bg-card rounded-xl border border-border shadow-sm p-4 sm:p-5 mb-6">
             <div className="flex items-center justify-between mb-3">
@@ -1336,19 +1500,35 @@ export default function AccountDetailPage() {
                   <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide">
                     {t('accounts.utilization')}
                   </p>
-                  <p className={`text-sm font-bold tabular-nums ${rawPct >= 100 ? 'text-rose-500' : 'text-foreground'}`}>{rawPct.toFixed(1)}%</p>
+                  <p className={`text-sm font-bold tabular-nums ${(committedPct ?? rawPct) >= 100 ? 'text-rose-500' : 'text-foreground'}`}>
+                    {(committedPct ?? rawPct).toFixed(1)}%
+                  </p>
                 </div>
-                <div className="h-2 bg-muted/60 rounded-full overflow-hidden mb-2">
+                <div className="h-2 bg-muted/60 rounded-full overflow-hidden mb-2 flex">
                   <div
-                    className={`h-full rounded-full transition-all ${utilizationColor(rawPct)}`}
+                    className={`h-full transition-all ${utilizationColor(rawPct)}`}
                     style={{ width: `${pct}%` }}
                   />
+                  {otherPct != null && otherPct > 0 && (
+                    <div
+                      className="h-full bg-muted-foreground/40 transition-all"
+                      style={{ width: `${otherPct}%` }}
+                    />
+                  )}
                 </div>
-                <p className="text-xs text-muted-foreground tabular-nums mb-4">
+                <p className="text-xs text-muted-foreground tabular-nums mb-1">
                   {mask(formatCurrency(utilized ?? 0, account.currency, locale))}
                   {' / '}
                   {mask(formatCurrency(limit, account.currency, locale))}
                 </p>
+                {otherBillsTotal > 0 && (
+                  <p className="text-xs text-muted-foreground mb-4">
+                    {t('accounts.otherBillsCommitted', {
+                      amount: mask(formatCurrency(otherBillsTotal, account.currency, locale)),
+                    })}
+                  </p>
+                )}
+                {otherBillsTotal === 0 && <div className="mb-4" />}
               </>
             )}
             <div className="grid grid-cols-2 gap-3 pt-3 border-t border-border">
