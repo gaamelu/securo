@@ -15,16 +15,26 @@
 // and provides small pure formatting/detection helpers so the component
 // stays declarative.
 import { parseMoney } from './insights-utils'
-import type { FlowData, FlowLink, FlowNode } from '@/types/insights'
+import type { FlowData, FlowLink, FlowNode } from '../types/insights'
 
 // ---------------------------------------------------------------------------
 // d3-sankey input shapes
 // ---------------------------------------------------------------------------
 
-/** A FlowNode plus the numeric value d3-sankey needs to lay out node height. */
-export interface SankeyGraphNode extends FlowNode {
+/**
+ * A FlowNode plus the numeric value d3-sankey needs to lay out node height.
+ *
+ * `value` is deliberately omitted from the inherited shape: on the wire it is
+ * a money string, while d3-sankey writes its own numeric `value` onto every
+ * node during layout. Keeping both under one name makes the type unsatisfiable
+ * (`string` is not assignable to `number`), so the wire value is preserved as
+ * `moneyValue` and the parsed one as `numericValue`.
+ */
+export interface SankeyGraphNode extends Omit<FlowNode, 'value'> {
   /** Parsed once here so downstream d3 layout code never re-parses money strings. */
   numericValue: number
+  /** The original wire string, for display through the privacy mask. */
+  moneyValue: string
 }
 
 /** A FlowLink resolved to numeric node indices, as d3-sankey requires. */
@@ -64,9 +74,10 @@ export function buildSankeyGraph(data: FlowData): SankeyGraph {
   const indexOf = new Map<string, number>()
   nodes.forEach((n, i) => indexOf.set(n.id, i))
 
-  const graphNodes: SankeyGraphNode[] = nodes.map((n) => ({
-    ...n,
-    numericValue: parseMoney(n.value),
+  const graphNodes: SankeyGraphNode[] = nodes.map(({ value, ...rest }) => ({
+    ...rest,
+    numericValue: parseMoney(value),
+    moneyValue: value,
   }))
 
   const graphLinks: SankeyGraphLink[] = []

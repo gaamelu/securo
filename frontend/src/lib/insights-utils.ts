@@ -153,3 +153,13 @@ export function natureColor(key: NatureKey): string {
 export function formatRatioPct(ratio: number, decimals = 2): string {
   return `${(ratio * 100).toFixed(decimals)}%`
 }
+
+/**
+ * Formats an already-percentage value (e.g. HygieneCoverageStat.pct, which
+ * the server sends as 83.3) for display. Distinct from `formatRatioPct`,
+ * which takes a ratio in [0, 1] — passing a percentage to that one silently
+ * multiplies it by 100 again.
+ */
+export function formatPct(pct: number, decimals = 1): string {
+  return `${pct.toFixed(decimals)}%`
+}

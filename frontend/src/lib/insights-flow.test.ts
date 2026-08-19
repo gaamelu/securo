@@ -7,7 +7,7 @@ import {
   formatFlowAmount,
   isFlowEmpty,
 } from './insights-flow'
-import type { FlowData } from '@/types/insights'
+import type { FlowData } from '../types/insights'
 
 const emptyFlow: FlowData = {
   nodes: [],

@@ -8,7 +8,7 @@
 // `assumptions` is rendered as a plain list exactly as the server sends it
 // (label/value/source) — this component never explains or derives why a
 // number is what it is.
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '@/lib/api'
 import { useAuth } from '@/contexts/auth-context'
@@ -82,16 +82,22 @@ function ProjectionContent({ data, currency }: { data: ProjectionData; currency:
     return { minY: min, maxY: max }
   }, [points])
 
-  const xFor = (i: number) =>
-    CHART_PADDING_X + (i / Math.max(1, points.length - 1)) * (width - 2 * CHART_PADDING_X)
-  const yFor = (v: number) =>
-    CHART_HEIGHT -
-    CHART_PADDING_Y -
-    ((v - minY) / (maxY - minY)) * (CHART_HEIGHT - 2 * CHART_PADDING_Y)
-
-  const balancePath = points
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i)} ${yFor(parseMoney(p.balance))}`)
-    .join(' ')
+  // Memoized so `bandPath` below depends on stable references. Declaring
+  // [points, minY, maxY, width] while closing over scale functions rebuilt
+  // every render defeats the memo, and the React Compiler declines to
+  // optimize a component whose stated dependencies don't match its real ones.
+  const xFor = useCallback(
+    (i: number) =>
+      CHART_PADDING_X + (i / Math.max(1, points.length - 1)) * (width - 2 * CHART_PADDING_X),
+    [points.length, width],
+  )
+  const yFor = useCallback(
+    (v: number) =>
+      CHART_HEIGHT -
+      CHART_PADDING_Y -
+      ((v - minY) / (maxY - minY)) * (CHART_HEIGHT - 2 * CHART_PADDING_Y),
+    [minY, maxY],
+  )
 
   const bandPath = useMemo(() => {
     const withBand = points
@@ -104,7 +110,7 @@ function ProjectionContent({ data, currency }: { data: ProjectionData; currency:
       .reverse()
       .map(({ i, p }) => `${xFor(i)},${yFor(parseMoney(p.low))}`)
     return `M ${top.join(' L ')} L ${bottom.join(' L ')} Z`
-  }, [points, minY, maxY, width])
+  }, [points, xFor, yFor])
 
   const fmtAmount = (v: number) =>
     privacyMode ? MASK : formatCurrency(v, displayCurrency, locale)
@@ -150,7 +156,7 @@ function ProjectionContent({ data, currency }: { data: ProjectionData; currency:
           })}
 
           {/* Committed (installments already contracted) — fact, not
-              estimate, so it gets its own heavier solid line rather than
+              estimate, so it gets its own heavier line rather than
               blending into the projected balance. */}
           {points.map((p, i) => {
             if (i === 0) return null
@@ -200,10 +206,10 @@ function ProjectionContent({ data, currency }: { data: ProjectionData; currency:
       </div>
 
       <div className="flex flex-wrap gap-4 text-[11px] text-muted-foreground">
-        <LegendItem color="var(--primary)" label="Saldo (real)" solid />
+        <LegendItem color="var(--primary)" label="Saldo (real)" />
         <LegendItem color="var(--primary)" label="Saldo (projetado)" dashed />
         <LegendItem color="var(--chart-1)" label="Faixa de confiança" swatch />
-        <LegendItem color="var(--chart-4)" label="Parcelas comprometidas" solid thick />
+        <LegendItem color="var(--chart-4)" label="Parcelas comprometidas" thick />
       </div>
 
       {data.assumptions.length > 0 && (
@@ -228,14 +234,12 @@ function ProjectionContent({ data, currency }: { data: ProjectionData; currency:
 function LegendItem({
   color,
   label,
-  solid,
   dashed,
   swatch,
   thick,
 }: {
   color: string
   label: string
-  solid?: boolean
   dashed?: boolean
   swatch?: boolean
   thick?: boolean
