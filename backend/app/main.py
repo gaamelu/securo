@@ -16,6 +16,7 @@ from app.api.connections import router as connections_router
 from app.api.custom_auth import router as custom_auth_router
 from app.api.dashboard import router as dashboard_router
 from app.api.import_logs import router as import_logs_router
+from app.api.insights import router as insights_router
 from app.api.oidc_auth import router as oidc_auth_router
 from app.api.passkeys import router as passkeys_router
 from app.api.import_transactions import router as import_router
@@ -172,6 +173,7 @@ app.include_router(asset_groups_router)
 app.include_router(collections_router)
 app.include_router(dashboard_router)
 app.include_router(reports_router)
+app.include_router(insights_router)
 app.include_router(search_router)
 app.include_router(setup_router)
 app.include_router(currencies_router)

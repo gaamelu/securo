@@ -113,6 +113,11 @@ class Transaction(Base):
     # Flag to exclude this transaction from reports and dashboard aggregations.
     # When set to True, the transaction is ignored for income/expense calculations.
     is_ignored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Insights classification (Passo 1 — additive only, nothing reads this
+    # yet). Per-transaction override of `Category.expense_nature`: 'fixed',
+    # 'variable', or 'discretionary'. Null means fall back to the category's
+    # default once that logic exists.
+    expense_nature: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # Link to the recurring bill this transaction fulfills (issue #116). Set when
     # a synced/imported/manual charge is matched to a recurring bill, or stamped
     # onto the placeholder generate_pending materializes. ON DELETE SET NULL: if

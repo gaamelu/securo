@@ -28,6 +28,7 @@ const RecurringPage = lazy(() => import('@/pages/recurring'))
 const GoalsPage = lazy(() => import('@/pages/goals'))
 const AssetsPage = lazy(() => import('@/pages/assets'))
 const ReportsPage = lazy(() => import('@/pages/reports'))
+const InsightsPage = lazy(() => import('@/pages/insights'))
 const PayeesPage = lazy(() => import('@/pages/payees'))
 const GroupsPage = lazy(() => import('@/pages/groups'))
 const GroupDetailPage = lazy(() => import('@/pages/group-detail'))
@@ -94,6 +95,7 @@ function App() {
                   <Route path="/recurring" element={<ModuleRoute module="recurring"><RecurringPage /></ModuleRoute>} />
                   <Route path="/assets" element={<ModuleRoute module="assets"><AssetsPage /></ModuleRoute>} />
                   <Route path="/reports" element={<ModuleRoute module="reports"><ReportsPage /></ModuleRoute>} />
+                  <Route path="/insights" element={<ModuleRoute module="insights"><InsightsPage /></ModuleRoute>} />
                   <Route path="/payees" element={<ModuleRoute module="payees"><PayeesPage /></ModuleRoute>} />
                   <Route path="/groups" element={<ModuleRoute module="split_groups"><GroupsPage /></ModuleRoute>} />
                   <Route path="/groups/:id" element={<ModuleRoute module="split_groups"><GroupDetailPage /></ModuleRoute>} />
