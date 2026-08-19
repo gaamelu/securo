@@ -30,6 +30,7 @@ PERSONAL_MODULES = [
     "import",
     "insights",
     "payees",
+    "purchase_decision",
     "recurring",
     "reports",
     "rules",

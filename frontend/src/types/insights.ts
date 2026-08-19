@@ -120,6 +120,7 @@ export interface FlowNode {
   kind: 'income' | 'group' | 'category' | 'saved'
   color: string
   value: Money
+  full_path?: string | null
 }
 
 export interface FlowLink {
@@ -174,10 +175,17 @@ export interface NatureReference {
 
 export interface NatureData {
   series: NatureMonth[]
+  savings_destination: SavingsDestination | null
   // NOTE: fixtures.py never populates this even though contratos.html's
   // "Forma do dado" lists it at the top level. Defensive: treat as possibly
   // absent/null.
   reference: NatureReference | null
+}
+
+export interface SavingsDestination {
+  amount: Money
+  share_of_income: number | null
+  account_count: number
 }
 
 // ---------------------------------------------------------------------------

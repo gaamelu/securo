@@ -9,7 +9,7 @@ shared P&L definition these queries reuse rather than duplicate.
 import math
 import statistics
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal, Optional
 
@@ -20,7 +20,6 @@ from app.models.account import Account
 from app.models.asset import Asset
 from app.models.asset_transaction import AssetTransaction
 from app.models.asset_value import AssetValue
-from app.models.budget import Budget
 from app.models.category import Category
 from app.models.category_group import CategoryGroup
 from app.models.goal import Goal
@@ -55,6 +54,7 @@ from app.schemas.insights import (
     PurchaseDecisionRequest,
     PurchaseDecisionScheduleRow,
     PurchaseDecisionVerdict,
+    SavingsDestination,
     VitalCard,
     VitalReference,
     YieldBasis,
@@ -62,6 +62,7 @@ from app.schemas.insights import (
     YieldWindowDays,
 )
 from app.services._query_filters import counts_as_user_pnl, reporting_date_col
+from app.services.insights_diagnostics import nature_shares, projection_months, savings_rate, security_status
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.credit_card_service import compute_available_credit
 from app.services.dashboard_service import (
@@ -71,6 +72,7 @@ from app.services.dashboard_service import (
     _month_range,
 )
 from app.services.fx_rate_service import convert
+from app.services.budget_service import get_budgets
 from app.services.report_service import _ACCOUNT_TYPE_COLORS, _ASSET_TYPE_COLORS  # noqa: F401 (color palette reuse)
 
 # Default monthly gross yield used for the breakeven table / purchase
@@ -101,11 +103,9 @@ MIN_MONTHS_FOR_RUNWAY = 3
 # How many worst offenders to surface in the hygiene block.
 _WORST_OFFENDERS_LIMIT = 5
 
-# Emergency-fund account name (exact match against Account.name). Excluded
-# from net_worth (see get_vitals) because it mirrors the Pluggy CDBs already
-# counted in assets_total — counting both would double-count the same money.
-# It IS the numerator for runway, which is precisely why it's the account
-# excluded there and nowhere else.
+# Legacy emergency-fund account name. Excluded from net_worth (see
+# get_vitals) because it mirrors Pluggy CDB assets already counted there.
+# Runway/safety calculations use every open `savings` account instead.
 _EMERGENCY_FUND_ACCOUNT_NAME = "Reserva de Emergência"
 
 # Modified z-score constant (Iglewicz & Hoaglin). Omitting it makes the
@@ -474,17 +474,12 @@ async def _budget_reference(
 ) -> tuple[dict, str]:
     """Reference = the category's budget for `target_month`, converted to
     primary currency."""
-    result = await session.execute(
-        select(Budget.category_id, Budget.currency, Budget.amount).where(
-            Budget.workspace_id == workspace_id,
-            Budget.month == target_month,
-        )
-    )
+    budgets = await get_budgets(session, workspace_id, target_month)
     out: dict[Optional[uuid.UUID], Decimal] = {}
-    for category_id, currency, amount in result.all():
-        ccy = currency or primary_currency
-        converted, _ = await convert(session, Decimal(str(amount)), ccy, primary_currency)
-        out[category_id] = out.get(category_id, Decimal("0")) + converted
+    for budget in budgets:
+        ccy = budget.currency or primary_currency
+        converted, _ = await convert(session, Decimal(str(budget.amount)), ccy, primary_currency)
+        out[budget.category_id] = converted
     return out, "budget"
 
 
@@ -649,12 +644,8 @@ async def get_nature(
             # empty month as a month with a (zero) spending mix.
             shares = None
         else:
-            shares = NatureShares(
-                fixed=float(totals["fixed"] / month_total),
-                variable=float(totals["variable"] / month_total),
-                discretionary=float(totals["discretionary"] / month_total),
-                unclassified=float(totals["unclassified"] / month_total),
-            )
+            shares_raw = nature_shares(totals)
+            shares = NatureShares(**{key: float(value) for key, value in shares_raw.items()})
 
         series.append(
             NatureMonth(
@@ -666,7 +657,49 @@ async def get_nature(
             )
         )
 
-    return NatureData(series=series, reference=None)
+    savings_accounts = (await session.scalars(
+        select(Account).where(
+            Account.workspace_id == workspace_id,
+            Account.type == "savings",
+            Account.is_closed.is_(False),
+        )
+    )).all()
+    savings_destination = None
+    if savings_accounts:
+        start = month_starts[0]
+        end = _month_range(month_starts[-1])[1]
+        result = await session.execute(
+            select(func.sum(_transaction_primary_amount(primary_currency)))
+            .where(
+                Transaction.workspace_id == workspace_id,
+                Transaction.account_id.in_([account.id for account in savings_accounts]),
+                Transaction.type == "credit",
+                date_col >= start,
+                date_col < end,
+                counts_as_user_pnl(),
+            )
+        )
+        amount = Decimal(str(result.scalar_one() or 0)).quantize(Decimal("0.01"))
+        income_result = await session.execute(
+            select(func.sum(_transaction_primary_amount(primary_currency)))
+            .outerjoin(Category, Transaction.category_id == Category.id)
+            .where(
+                Transaction.workspace_id == workspace_id,
+                Transaction.type == "credit",
+                date_col >= start,
+                date_col < end,
+                counts_as_user_pnl(),
+                func.coalesce(Category.flow_type, "income") != "transfer",
+            )
+        )
+        income = Decimal(str(income_result.scalar_one() or 0))
+        savings_destination = SavingsDestination(
+            amount=amount,
+            share_of_income=float(amount / income) if income > 0 else None,
+            account_count=len(savings_accounts),
+        )
+
+    return NatureData(series=series, reference=None, savings_destination=savings_destination)
 
 
 def _shift_month(d: date, delta: int) -> date:
@@ -1159,16 +1192,19 @@ async def _emergency_fund_balance(
     result = await session.execute(
         select(Account).where(
             Account.workspace_id == workspace_id,
-            Account.name == _EMERGENCY_FUND_ACCOUNT_NAME,
+            Account.type == "savings",
             Account.is_closed.is_(False),
         )
     )
-    account = result.scalars().first()
-    if account is None:
+    accounts = result.scalars().all()
+    if not accounts:
         return None
-    bal = await _account_balance_at(session, account, date.today())
-    converted, _ = await convert(session, Decimal(str(bal)), account.currency, primary_currency)
-    return converted
+    total = Decimal("0")
+    for account in accounts:
+        bal = await _account_balance_at(session, account, date.today())
+        converted, _ = await convert(session, Decimal(str(bal)), account.currency, primary_currency)
+        total += converted
+    return total
 
 
 async def _runway_card(
@@ -1225,16 +1261,17 @@ async def _runway_card(
         )
 
     months = (fund_balance / essential_cost).quantize(Decimal("0.1"))
-    if months >= 6:
-        status: Literal["good", "warn", "crit", "unknown"] = "good"
-    elif months >= 3:
-        status = "warn"
-    else:
-        status = "crit"
+    projection = await get_projection(session, workspace_id, primary_currency)
+    projected_balances = [point.balance for point in projection.points if point.kind == "projected"]
+    minimum_projected = min(projected_balances, default=Decimal("0"))
+    status_name = security_status(months, minimum_projected, essential_cost)
+    status: Literal["good", "warn", "crit", "unknown"] = {
+        "safe": "good", "attention": "warn", "risk": "crit"
+    }[status_name]
 
     return VitalCard(
         key="runway",
-        label="Fôlego financeiro",
+        label="Segurança financeira",
         value=months,
         unit="months",
         reference=VitalReference(
@@ -1245,7 +1282,10 @@ async def _runway_card(
         ),
         status=status,
         available=True,
-        blocked_reason=None,
+        blocked_reason=(
+            f"Piso projetado em 12 meses: R$ {minimum_projected:.2f}."
+            if minimum_projected < essential_cost else None
+        ),
         series=None,
     )
 
@@ -1257,15 +1297,38 @@ async def _savings_rate_card(
     accounting_mode: str,
     today: date,
 ) -> VitalCard:
-    """savings_rate = (income - consumption) / income. LOCKED: net
-    contribution (income - all outflows, including savings/debt) is a
-    decomposition shown alongside elsewhere, never this numerator."""
-    month_start = _month_start(today)
+    """Savings routed to any savings account divided by external inflows."""
+    month_starts = _trailing_month_starts(today, 6, include_current=True)
     totals = await _monthly_totals(
-        session, workspace_id, primary_currency, accounting_mode, [month_start]
+        session, workspace_id, primary_currency, accounting_mode, month_starts
     )
-    income = totals[month_start]["income"]
-    consumption = totals[month_start]["consumption"]
+    income = sum((totals[month]["income"] for month in month_starts), Decimal("0"))
+    savings_accounts = await session.scalars(
+        select(Account).where(
+            Account.workspace_id == workspace_id,
+            Account.type == "savings",
+            Account.is_closed.is_(False),
+        )
+    )
+    accounts = savings_accounts.all()
+    contribution = Decimal("0")
+    if accounts:
+        account_ids = [account.id for account in accounts]
+        date_col = reporting_date_col(accounting_mode)
+        start = month_starts[0]
+        end = _month_range(month_starts[-1])[1]
+        result = await session.execute(
+            select(func.sum(_transaction_primary_amount(primary_currency)))
+            .where(
+                Transaction.workspace_id == workspace_id,
+                Transaction.account_id.in_(account_ids),
+                Transaction.type == "credit",
+                date_col >= start,
+                date_col < end,
+                counts_as_user_pnl(),
+            )
+        )
+        contribution = Decimal(str(result.scalar_one() or 0))
 
     if income <= 0:
         return VitalCard(
@@ -1280,8 +1343,8 @@ async def _savings_rate_card(
             series=None,
         )
 
-    rate = float((income - consumption) / income)
-    if rate >= 0.20:
+    rate = savings_rate(contribution, income)
+    if rate >= 20:
         status: Literal["good", "warn", "crit", "unknown"] = "good"
     elif rate >= 0:
         status = "warn"
@@ -1291,9 +1354,14 @@ async def _savings_rate_card(
     return VitalCard(
         key="savings_rate",
         label="Taxa de poupança",
-        value=Decimal(str(round(rate * 100, 2))),
+        value=rate,
         unit="percent",
-        reference=None,
+        reference=VitalReference(
+            value=contribution.quantize(Decimal("0.01")),
+            source="historical",
+            method="savings_accounts_credits_over_external_inflows_rolling_6_months",
+            label="Aporte acumulado em savings (6 meses)",
+        ),
         status=status,
         available=True,
         blocked_reason=None,
@@ -1564,7 +1632,7 @@ async def get_flow(
         group_node_id = f"group:{group_id}" if group_id else "group:none"
         group_value = sum((d["amount"] for _cid, d in cats), Decimal("0"))
         nodes.append(
-            FlowNode(id=group_node_id, label=meta["name"], depth=1, kind="group", color=meta["color"], value=group_value)
+            FlowNode(id=group_node_id, label=meta["name"], depth=1, kind="group", color=meta["color"], value=group_value, full_path=meta["name"])
         )
         links.append(FlowLink(source="renda", target=group_node_id, value=group_value))
 
@@ -1580,7 +1648,7 @@ async def get_flow(
             nodes.append(
                 FlowNode(
                     id=cat_node_id, label=data["name"], depth=2, kind="category",
-                    color=data["color"], value=data["amount"],
+                    color=data["color"], value=data["amount"], full_path=f"{meta['name']} › {data['name']}",
                 )
             )
             links.append(FlowLink(source=group_node_id, target=cat_node_id, value=data["amount"]))
@@ -1588,7 +1656,7 @@ async def get_flow(
         if group_collapsed > 0:
             other_node_id = f"{group_node_id}:outros"
             nodes.append(
-                FlowNode(id=other_node_id, label="Outros", depth=2, kind="category", color="#9CA3AF", value=group_collapsed)
+                FlowNode(id=other_node_id, label="Outros", depth=2, kind="category", color="#9CA3AF", value=group_collapsed, full_path=f"{meta['name']} › Outros")
             )
             links.append(FlowLink(source=group_node_id, target=other_node_id, value=group_collapsed))
 
@@ -1686,7 +1754,9 @@ async def get_projection(
     )
     half_width_1 = ((p75 - p25) / 2).quantize(Decimal("0.01"))
 
-    future_months = [_shift_month(_month_start(today), i) for i in range(0, _PROJECTION_HORIZON_MONTHS)]
+    projection_schedule = projection_months(today)
+    actual_months = [date.fromisoformat(f"{month}-01") for month, kind in projection_schedule if kind == "actual"]
+    future_months = [date.fromisoformat(f"{month}-01") for month, kind in projection_schedule if kind == "projected"]
     installment_totals = await _installment_monthly_totals(
         session, workspace_id, primary_currency, accounting_mode, future_months
     )
@@ -1696,22 +1766,23 @@ async def get_projection(
 
     current_balance = await _total_open_account_balance(session, workspace_id, primary_currency, today)
 
-    points: list[ProjectionPoint] = [
-        ProjectionPoint(
-            month=_month_start(today).strftime("%Y-%m"),
-            kind="actual",
-            balance=current_balance.quantize(Decimal("0.01")),
-            low=None,
-            high=None,
-            committed=Decimal("0.00"),
-            components=ProjectionComponents(
-                income_expected=Decimal("0.00"),
-                recurring=Decimal("0.00"),
-                installments=Decimal("0.00"),
-                variable_estimate=Decimal("0.00"),
-            ),
+    points: list[ProjectionPoint] = []
+    for month_start in actual_months:
+        month_end = _month_range(month_start)[1]
+        balance = await _total_open_account_balance(
+            session, workspace_id, primary_currency, month_end - timedelta(days=1)
         )
-    ]
+        points.append(
+            ProjectionPoint(
+                month=month_start.strftime("%Y-%m"), kind="actual",
+                balance=balance.quantize(Decimal("0.01")), low=None, high=None,
+                committed=Decimal("0.00"),
+                components=ProjectionComponents(
+                    income_expected=Decimal("0.00"), recurring=Decimal("0.00"),
+                    installments=Decimal("0.00"), variable_estimate=Decimal("0.00"),
+                ),
+            )
+        )
 
     running_balance = current_balance
     for n, month_start in enumerate(future_months, start=1):
@@ -1720,18 +1791,15 @@ async def get_projection(
         committed = installments
         net = income_expected + recurring - variable_estimate - installments
         running_balance = running_balance + net
-
         half_width = (half_width_1 * Decimal(str(math.sqrt(n)))).quantize(Decimal("0.01"))
-        low = (running_balance - half_width).quantize(Decimal("0.01"))
-        high = (running_balance + half_width).quantize(Decimal("0.01"))
 
         points.append(
             ProjectionPoint(
                 month=month_start.strftime("%Y-%m"),
                 kind="projected",
                 balance=running_balance.quantize(Decimal("0.01")),
-                low=low,
-                high=high,
+                low=(running_balance - half_width).quantize(Decimal("0.01")),
+                high=(running_balance + half_width).quantize(Decimal("0.01")),
                 committed=committed.quantize(Decimal("0.01")),
                 components=ProjectionComponents(
                     income_expected=income_expected,
@@ -1762,11 +1830,6 @@ async def get_projection(
             label="Parcelas conhecidas",
             value="soma mensal por mês futuro",
             source="Transações com total_installments preenchido",
-        ),
-        ProjectionAssumption(
-            label="Largura da banda de confiança",
-            value=f"hw(n) = {half_width_1:.2f} × √n",
-            source="(p75-p25)/2 do gasto variável mensal, escalado por √n para não assumir erros perfeitamente correlacionados entre meses",
         ),
     ]
 

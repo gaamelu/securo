@@ -18,6 +18,7 @@ const PERSONAL_MODULES: ModuleId[] = [
   'import',
   'reports',
   'insights',
+  'purchase_decision',
   'assets',
   'budgets',
   'goals',
@@ -60,6 +61,7 @@ describe('visibleNavItems', () => {
       'reports',
       'insights',
       'assets',
+      'purchaseDecision',
       'budgets',
       'goals',
       'recurring',
@@ -69,7 +71,7 @@ describe('visibleNavItems', () => {
       'rules',
     ])
     // All three section headers survive.
-    expect(personal.filter((i) => i.type === 'separator')).toHaveLength(3)
+    expect(personal.filter((i) => i.type === 'separator')).toHaveLength(4)
   })
 
   it('adds invoices for a workspace that has it', () => {

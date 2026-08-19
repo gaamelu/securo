@@ -7,6 +7,7 @@ import type {
   InsightsEnvelope,
   InsightsReference,
   NatureData,
+  PurchaseDecisionData,
 } from '@/types/insights'
 import type {
   User,
@@ -1214,9 +1215,7 @@ export const reports = {
   },
 }
 
-// Insights — /hygiene, /categories, /nature, /breakeven-table exist on the
-// backend today; the remaining blocks (alerts, vitals, flow, projection,
-// goals, purchase-decision) are still being written server-side.
+// Insights endpoints. Server owns calculations; UI only formats responses.
 export const insights = {
   hygiene: async (): Promise<InsightsEnvelope<HygieneData>> => {
     const { data } = await api.get('/insights/hygiene')
@@ -1234,6 +1233,10 @@ export const insights = {
     const { data } = await api.get('/insights/breakeven-table', {
       params: monthlyYield !== undefined ? { monthly_yield: monthlyYield } : undefined,
     })
+    return data
+  },
+  purchaseDecision: async (request: { price: string; cash_discount_pct: number; installments: number }): Promise<InsightsEnvelope<PurchaseDecisionData>> => {
+    const { data } = await api.post('/insights/purchase-decision', request)
     return data
   },
 }

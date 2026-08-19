@@ -87,6 +87,7 @@ function CategoriesTable({
             <th className="pb-2 font-medium text-right">Valor</th>
               <th className="pb-2 font-medium text-right">Referência</th>
               <th className="pb-2 font-medium text-right">Diferença</th>
+              <th className="pb-2 font-medium text-right">%</th>
               <th className="pb-2 pl-2 text-right font-medium">Ação</th>
           </tr>
         </thead>
@@ -114,6 +115,12 @@ function CategoriesTable({
                   {row.status === 'no_ref'
                     ? '—'
                     : mask(`${delta.sign}${formatCurrency(delta.magnitude, currency, locale)}`)}
+                </td>
+                <td
+                  className="py-2 text-right tabular-nums text-[11px]"
+                  style={{ color: row.status === 'no_ref' ? statusColor('unknown') : statusColor(row.status) }}
+                >
+                  {row.delta_pct === null ? '—' : `${row.delta_pct >= 0 ? '+' : ''}${(row.delta_pct * 100).toFixed(1)}%`}
                 </td>
                 <td className="py-2 pl-2 text-right">
                   {row.status === 'no_ref' ? (

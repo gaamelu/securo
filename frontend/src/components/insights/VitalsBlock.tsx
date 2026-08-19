@@ -47,7 +47,7 @@ export function VitalsBlock() {
 }
 
 const CARD_LABELS: Record<VitalCard['key'], string> = {
-  runway: 'Fôlego financeiro',
+  runway: 'Segurança financeira',
   savings_rate: 'Taxa de poupança',
   net_worth: 'Patrimônio líquido',
   credit_utilization: 'Uso do crédito',

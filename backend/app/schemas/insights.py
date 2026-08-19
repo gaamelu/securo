@@ -147,6 +147,7 @@ class FlowNode(BaseModel):
     kind: Literal["income", "group", "category", "saved"]
     color: str
     value: Money
+    full_path: str | None = None
 
 
 class FlowLink(BaseModel):
@@ -204,8 +205,15 @@ class NatureReference(BaseModel):
     unclassified: Money
 
 
+class SavingsDestination(BaseModel):
+    amount: Money
+    share_of_income: float | None
+    account_count: int
+
+
 class NatureData(BaseModel):
     series: list[NatureMonth]
+    savings_destination: SavingsDestination | None = None
     # NOTE: fixtures.py's `nature()` never populates a `reference` key —
     # the mock's build() only calls nature() with no reference argument
     # and the dict it returns has no such field. contratos.html's "Forma

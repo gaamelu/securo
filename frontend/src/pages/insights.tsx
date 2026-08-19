@@ -1,6 +1,6 @@
 // frontend/src/pages/insights.tsx
 //
-// Shell for the Insights tab. All nine blocks are live end-to-end.
+// Shell for the Insights tab. Purchase decision lives under Ferramentas.
 //
 // Structure mirrors frontend/src/pages/reports.tsx: useQuery for data
 // fetching per block, a PageHeader, explicit loading/error/empty states.
@@ -15,7 +15,6 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { PageHeader } from '@/components/page-header'
 import { AlertsBlock } from '@/components/insights/AlertsBlock'
-import { BreakevenBlock } from '@/components/insights/BreakevenBlock'
 import { CategoriesBlock } from '@/components/insights/CategoriesBlock'
 import { FlowBlock } from '@/components/insights/FlowBlock'
 import { GoalsBlock } from '@/components/insights/GoalsBlock'
@@ -64,7 +63,6 @@ export default function InsightsPage() {
         <ProjectionBlock />
         <GoalsBlock />
         <HygieneBlock />
-        <BreakevenBlock />
       </div>
     </div>
   )

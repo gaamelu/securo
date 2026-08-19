@@ -17,6 +17,7 @@ import {
   type NatureChartMetric,
   type NatureKey,
 } from '@/lib/insights-utils'
+import { niceTicks } from '@/lib/chart-scale'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { InsightsEnvelope, NatureData, NatureMonth } from '@/types/insights'
 import { EnvelopeEmpty, EnvelopeError, EnvelopeRetryError, InsightsCard } from './envelope-states'
@@ -56,6 +57,7 @@ export function NatureBlock() {
       ) : (
         <NatureContent
           series={query.data.data.series}
+          savingsDestination={query.data.data.savings_destination}
           currency={query.data.currency}
           isRefreshing={query.isFetching}
           transportError={query.isError}
@@ -68,12 +70,14 @@ export function NatureBlock() {
 
 function NatureContent({
   series,
+  savingsDestination,
   currency,
   isRefreshing,
   transportError,
   onRetry,
 }: {
   series: NatureMonth[]
+  savingsDestination: NatureData['savings_destination']
   currency: string
   isRefreshing: boolean
   transportError: boolean
@@ -94,7 +98,7 @@ function NatureContent({
     })
     return metric === 'share' ? { min: 0, max: 100 } : chartDomain(values, true)
   }, [metric, series])
-  const ticks = makeTicks(domain.min, domain.max, 4)
+  const ticks = niceTicks(domain.min, domain.max, 4)
   const selected = series.find((month) => month.month === selectedMonth) ?? series[series.length - 1]
 
   const yFor = (value: number) =>
@@ -221,6 +225,15 @@ function NatureContent({
         {metric === 'share' && selected.shares === null && <p className="mt-1 text-muted-foreground">Participação indisponível neste mês; altere para Valor.</p>}
       </div>
 
+      {savingsDestination && (
+        <div className="flex items-center gap-2 rounded-md border border-chart-3/30 bg-chart-3/5 px-3 py-2 text-xs">
+          <span className="h-2.5 w-2.5 rounded-sm bg-chart-3" aria-hidden="true" />
+          <span className="text-muted-foreground">Destino de poupança (contas savings):</span>
+          <strong className="text-foreground">{mask(formatCurrency(parseMoney(savingsDestination.amount), displayCurrency, locale))}</strong>
+          <span className="text-muted-foreground">({savingsDestination.account_count} conta{savingsDestination.account_count === 1 ? '' : 's'})</span>
+        </div>
+      )}
+
       <details>
         <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Explorar dados</summary>
         <div className="mt-2 overflow-x-auto">
@@ -232,11 +245,6 @@ function NatureContent({
       </details>
     </div>
   )
-}
-
-function makeTicks(min: number, max: number, count: number): number[] {
-  if (count <= 0 || min === max) return [min]
-  return Array.from({ length: count + 1 }, (_, index) => min + ((max - min) * index) / count)
 }
 
 function compactMoney(value: number, currency: string, locale: string): string {

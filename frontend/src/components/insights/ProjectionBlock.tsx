@@ -10,7 +10,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { formatCurrency } from '@/lib/format'
-import { chartDomain, parseMoney, projectionDomain } from '@/lib/insights-utils'
+import { chartDomain, parseMoney } from '@/lib/insights-utils'
+import { niceTicks } from '@/lib/chart-scale'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { InsightsEnvelope, ProjectionData } from '@/types/insights'
 import { EnvelopeEmpty, EnvelopeError, EnvelopeRetryError, InsightsCard } from './envelope-states'
@@ -75,27 +76,17 @@ function ProjectionContent({
   const displayCurrency = currency || user?.preferences?.currency_display || 'USD'
   const points = data.points
   const width = Math.max(460, AXIS_LEFT + points.length * 64)
-  const balanceDomain = useMemo(() => projectionDomain(points), [points])
+  const balanceDomain = useMemo(() => chartDomain(points.map((point) => parseMoney(point.balance)), true), [points])
   const committedDomain = useMemo(() => chartDomain(points.map((point) => parseMoney(point.committed)), true), [points])
   const selected = points[Math.min(selectedIndex, points.length - 1)]
   const xFor = (index: number) => AXIS_LEFT + (index / Math.max(1, points.length - 1)) * (width - AXIS_LEFT - 16)
   const balanceY = (value: number) => scaleY(value, balanceDomain.min, balanceDomain.max, BALANCE_HEIGHT, AXIS_BOTTOM, PLOT_TOP)
   const committedY = (value: number) => scaleY(value, committedDomain.min, committedDomain.max, COMMITTED_HEIGHT, AXIS_BOTTOM, PLOT_TOP)
-  const balanceTicks = makeTicks(balanceDomain.min, balanceDomain.max, 4)
-  const committedTicks = makeTicks(committedDomain.min, committedDomain.max, 3)
+  const balanceTicks = niceTicks(balanceDomain.min, balanceDomain.max, 5)
+  const committedTicks = niceTicks(committedDomain.min, committedDomain.max, 4)
   const zeroBalanceY = balanceY(0)
   const zeroCommittedY = committedY(0)
   const firstProjectedIndex = points.findIndex((point) => point.kind === 'projected')
-
-  const bandPath = (() => {
-    const valid = points
-      .map((point, index) => ({ point, index }))
-      .filter(({ point }) => point.low !== null && point.high !== null && parseMoney(point.low) <= parseMoney(point.high))
-    if (valid.length === 0) return null
-    const top = valid.map(({ point, index }) => `${xFor(index)},${balanceY(parseMoney(point.high))}`)
-    const bottom = valid.slice().reverse().map(({ point, index }) => `${xFor(index)},${balanceY(parseMoney(point.low))}`)
-    return `M ${top.join(' L ')} L ${bottom.join(' L ')} Z`
-  })()
 
   const fmt = (value: string | null | undefined) => value === null || value === undefined ? '—' : mask(formatCurrency(parseMoney(value), displayCurrency, locale))
   const fmtAssumption = (value: string) => /^-?\d+(\.\d+)?$/.test(value) ? fmt(value) : value
@@ -111,7 +102,6 @@ function ProjectionContent({
           <svg width={width} height={BALANCE_HEIGHT} role="img" aria-label="Saldo real e projetado por mês">
             {balanceTicks.map((tick) => <AxisLine key={tick} x1={AXIS_LEFT} x2={width - 8} y={balanceY(tick)} label={compactMoney(tick, displayCurrency, locale)} />)}
             <line x1={AXIS_LEFT} x2={width - 8} y1={zeroBalanceY} y2={zeroBalanceY} stroke="var(--muted-foreground)" strokeDasharray="3 3" />
-            {bandPath && <path d={bandPath} fill="var(--chart-1)" fillOpacity={0.14} stroke="none" />}
             {points.map((point, index) => {
               if (index === 0) return null
               const previous = points[index - 1]
@@ -134,7 +124,6 @@ function ProjectionContent({
         <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-muted-foreground">
           <LegendItem color="var(--primary)" label="Saldo real" />
           <LegendItem color="var(--primary)" label="Saldo projetado" dashed />
-          <LegendItem color="var(--chart-1)" label="Faixa de confiança" swatch />
           <LegendItem color="var(--destructive)" label="Saldo negativo" />
         </div>
       </section>
@@ -161,7 +150,6 @@ function ProjectionContent({
         <div className="mt-1 grid gap-x-4 gap-y-0.5 sm:grid-cols-2">
           <span className="text-muted-foreground">Saldo: <strong className="font-medium text-foreground">{fmt(selected.balance)}</strong></span>
           <span className="text-muted-foreground">Parcelas: <strong className="font-medium text-foreground">{fmt(selected.committed)}</strong></span>
-          <span className="text-muted-foreground">Faixa: <strong className="font-medium text-foreground">{selected.low !== null && selected.high !== null ? `${fmt(selected.low)} – ${fmt(selected.high)}` : 'indisponível'}</strong></span>
         </div>
         <div className="mt-1 grid gap-x-4 gap-y-0.5 text-muted-foreground sm:grid-cols-2">
           <span>Renda: {fmt(selected.components?.income_expected)}</span>
@@ -188,11 +176,6 @@ function ProjectionContent({
 
 function scaleY(value: number, min: number, max: number, height: number, bottom: number, top: number): number {
   return top + (height - bottom - top) - ((value - min) / Math.max(1e-9, max - min)) * (height - bottom - top)
-}
-
-function makeTicks(min: number, max: number, count: number): number[] {
-  if (count <= 0 || min === max) return [min]
-  return Array.from({ length: count + 1 }, (_, index) => min + ((max - min) * index) / count)
 }
 
 function compactMoney(value: number, currency: string, locale: string): string {

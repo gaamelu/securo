@@ -65,9 +65,11 @@ const LABEL_MIN_GAP = 26
 const TOP_GUTTER = 16
 
 function flowNodeLabel(node: SankeyGraphNode): string {
-  if (node.kind === 'group') return `Grupo: ${node.label}`
-  if (node.kind === 'category') return `Categoria: ${node.label}`
   return node.label
+}
+
+function flowNodePath(node: SankeyGraphNode): string {
+  return node.full_path ?? node.label
 }
 
 export function FlowBlock() {
@@ -207,7 +209,7 @@ function FlowContent({ data, currency }: { data: FlowData; currency: string }) {
                     strokeWidth={Math.max(1.5, link.width ?? 1)}
                   >
                     <title>
-                      {flowNodeLabel(link.target as SankeyGraphNode)}: {fmtAmount(value)} ({pct})
+                      {flowNodePath(link.target as SankeyGraphNode)}: {fmtAmount(value)} ({pct})
                     </title>
                   </path>
                 )
@@ -238,7 +240,7 @@ function FlowContent({ data, currency }: { data: FlowData; currency: string }) {
                       rx={3}
                     >
                       <title>
-                        {flowNodeLabel(n)}: {fmtAmount(n.numericValue)}
+                        {flowNodePath(n)}: {fmtAmount(n.numericValue)}
                       </title>
                     </rect>
                     <text
@@ -277,7 +279,7 @@ function FlowContent({ data, currency }: { data: FlowData; currency: string }) {
           <tbody>
             {graph.nodes.map((n) => (
               <tr key={n.id}>
-                <td>{flowNodeLabel(n)}</td>
+                <td>{flowNodePath(n)}</td>
                 <td>{fmtAmount(n.numericValue)}</td>
               </tr>
             ))}

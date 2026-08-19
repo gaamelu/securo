@@ -672,15 +672,13 @@ async def test_flow_edges_sum_to_node_value_within_a_cent(
 
 
 @pytest.mark.asyncio
-async def test_savings_rate_uses_income_minus_consumption_not_net_contribution(
+async def test_savings_rate_is_zero_without_savings_account(
     session: AsyncSession,
     test_user: User,
     test_workspace: Workspace,
     test_account: Account,
 ):
-    """savings_rate is LOCKED to (income - consumption) / income. A transfer
-    to savings (flow_type='saving', not 'consumption') must not reduce it —
-    if it did, the endpoint would be computing net contribution instead."""
+    """Savings rate needs an explicit savings account destination."""
     income_cat = await _income_category(session, user=test_user)
     group = CategoryGroup(
         id=uuid.uuid4(), user_id=test_user.id, name="Despesas", icon="folder", color="#6B7280"
@@ -713,7 +711,7 @@ async def test_savings_rate_uses_income_minus_consumption_not_net_contribution(
         session, user=test_user, workspace=test_workspace, account=test_account,
         category=consumption_cat, when=today, amount="1000.00",
     )
-    # Money moved to savings — must NOT lower the LOCKED savings_rate.
+    # Category-only saving is not a savings-account contribution.
     await _spend(
         session, user=test_user, workspace=test_workspace, account=test_account,
         category=saving_cat, when=today, amount="2000.00",
@@ -723,8 +721,7 @@ async def test_savings_rate_uses_income_minus_consumption_not_net_contribution(
     cards = await get_vitals(session, test_workspace.id, "BRL")
     savings_card = next(c for c in cards if c.key == "savings_rate")
 
-    # (4000 - 1000) / 4000 = 0.75 -> 75.00%, NOT (4000-1000-2000)/4000 = 25%.
-    assert savings_card.value == Decimal("75.00")
+    assert savings_card.value == Decimal("0.00")
 
 
 # ---------------------------------------------------------------------------

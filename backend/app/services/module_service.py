@@ -60,6 +60,7 @@ class ModuleId(str, Enum):
     RULES = "rules"
     INVOICES = "invoices"
     INSIGHTS = "insights"
+    PURCHASE_DECISION = "purchase_decision"
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ CATALOG: Mapping[ModuleId, ModuleSpec] = {
         ModuleSpec(ModuleId.RULES, default_enabled=True),
         ModuleSpec(ModuleId.INVOICES, default_enabled=False),
         ModuleSpec(ModuleId.INSIGHTS, default_enabled=True),
+        ModuleSpec(ModuleId.PURCHASE_DECISION, default_enabled=True),
     )
 }
 
