@@ -3,9 +3,12 @@ import {
   coverageStatus,
   formatDelta,
   formatRatioPct,
+  chartDomain,
+  natureChartValues,
   natureColor,
   natureSharesToPercents,
   parseMoney,
+  projectionDomain,
   statusColor,
 } from './insights-utils'
 
@@ -138,6 +141,56 @@ describe('natureSharesToPercents', () => {
       { key: 'discretionary', pct: 0 },
       { key: 'unclassified', pct: 0 },
     ])
+  })
+})
+
+describe('natureChartValues', () => {
+  const values = { fixed: '100.00', variable: '25.00', discretionary: '0.00', unclassified: '5.00' }
+  const shares = { fixed: 0.5, variable: 0.25, discretionary: 0, unclassified: 0.25 }
+
+  it('keeps absolute amounts for amount mode instead of normalizing every month', () => {
+    expect(natureChartValues(values, shares, 'amount')).toEqual([
+      { key: 'fixed', value: 100 },
+      { key: 'variable', value: 25 },
+      { key: 'discretionary', value: 0 },
+      { key: 'unclassified', value: 5 },
+    ])
+  })
+
+  it('converts shares to percentages for participation mode', () => {
+    expect(natureChartValues(values, shares, 'share')).toEqual([
+      { key: 'fixed', value: 50 },
+      { key: 'variable', value: 25 },
+      { key: 'discretionary', value: 0 },
+      { key: 'unclassified', value: 25 },
+    ])
+  })
+
+  it('returns null for participation mode when shares are unavailable', () => {
+    expect(natureChartValues(values, null, 'share')).toBeNull()
+  })
+})
+
+describe('chartDomain', () => {
+  it('preserves magnitude differences in an absolute chart', () => {
+    expect(chartDomain([100, 10000], true)).toEqual({ min: 0, max: 10000 })
+  })
+
+  it('includes zero when a projection crosses into negative balance', () => {
+    expect(chartDomain([-500, 2000], true)).toEqual({ min: -500, max: 2000 })
+  })
+
+  it('expands a flat series to a useful non-zero range', () => {
+    expect(chartDomain([0, 0], true)).toEqual({ min: 0, max: 1 })
+  })
+})
+
+describe('projectionDomain', () => {
+  it('includes balance, confidence bounds, and zero', () => {
+    expect(projectionDomain([
+      { balance: '2000.00', low: '1500.00', high: '2500.00' },
+      { balance: '-500.00', low: '-800.00', high: '100.00' },
+    ])).toEqual({ min: -800, max: 2500 })
   })
 })
 

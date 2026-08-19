@@ -114,6 +114,74 @@ export interface NatureSharePercent {
   pct: number
 }
 
+export type NatureChartMetric = 'amount' | 'share'
+
+export interface NatureValueInput {
+  fixed: string
+  variable: string
+  discretionary: string
+  unclassified: string
+}
+
+export interface NatureChartValue {
+  key: NatureKey
+  value: number
+}
+
+/** Returns values for the selected chart metric without normalizing amounts. */
+export function natureChartValues(
+  values: NatureValueInput,
+  shares: NatureShareInput | null,
+  metric: NatureChartMetric,
+): NatureChartValue[] | null {
+  if (metric === 'share' && shares === null) return null
+
+  return (['fixed', 'variable', 'discretionary', 'unclassified'] as const).map((key) => ({
+    key,
+    value:
+      metric === 'amount'
+        ? parseMoney(values[key])
+        : Math.round((shares?.[key] ?? 0) * 1000) / 10,
+  }))
+}
+
+export interface ChartDomain {
+  min: number
+  max: number
+}
+
+/** Finds a stable chart domain, always including zero when requested. */
+export function chartDomain(values: number[], includeZero = false): ChartDomain {
+  const finite = values.filter(Number.isFinite)
+  if (finite.length === 0) return includeZero ? { min: 0, max: 1 } : { min: -1, max: 1 }
+
+  let min = Math.min(...finite)
+  let max = Math.max(...finite)
+  if (includeZero) {
+    min = Math.min(min, 0)
+    max = Math.max(max, 0)
+  }
+
+  if (min === max) {
+    if (min === 0) return { min: 0, max: 1 }
+    const padding = Math.max(Math.abs(min) * 0.1, 1)
+    return { min: min - padding, max: max + padding }
+  }
+  return { min, max }
+}
+
+/** Domain for balance charts, including optional confidence bounds and zero. */
+export function projectionDomain(
+  points: Array<{ balance: string; low: string | null; high: string | null }>,
+): ChartDomain {
+  const values = points.flatMap((point) => [
+    parseMoney(point.balance),
+    ...(point.low === null ? [] : [parseMoney(point.low)]),
+    ...(point.high === null ? [] : [parseMoney(point.high)]),
+  ])
+  return chartDomain(values, true)
+}
+
 /**
  * Converts a month's `shares` (fractions in [0, 1], or null when the month
  * had no trusted spend — see NatureMonth.shares) into display-ready
@@ -138,7 +206,7 @@ export function natureColor(key: NatureKey): string {
     case 'fixed':
       return 'var(--chart-1)' // indigo
     case 'variable':
-      return 'var(--chart-2)' // violet
+      return 'var(--chart-5)' // rose; distinct from fixed even in compact legends
     case 'discretionary':
       return 'var(--chart-4)' // amber
     case 'unclassified':

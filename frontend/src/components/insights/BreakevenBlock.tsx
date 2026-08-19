@@ -54,48 +54,39 @@ function BreakevenContent({ data }: { data: BreakevenTableData }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-xs text-muted-foreground">
-        Rendimento mensal:{' '}
-        <span className="font-medium text-foreground">{formatRatioPct(Number(yield_basis.monthly_gross), 3)}</span>
-        {yield_basis.method === 'observed' ? (
-          <>{' · '}amostra de {yield_basis.sample_size} obs. · {yield_basis.window_days.min}-{yield_basis.window_days.max} dias</>
-        ) : (
-          <> · premissa padrão, sem amostra observada</>
-        )}
-      </p>
-
-      <div className="privacy-sensitive overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-[11px] text-muted-foreground uppercase tracking-wider">
-              <th className="pb-2 font-medium">Parcelas</th>
-              <th className="pb-2 font-medium text-right">IR</th>
-              <th className="pb-2 font-medium text-right">Líquido/mês</th>
-              <th className="pb-2 font-medium text-right">Desconto de equilíbrio</th>
-              <th className="pb-2 font-medium text-right">Ganho por R$1000</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.n} className="border-t border-border/50">
-                <td className="py-1.5 text-foreground tabular-nums">{row.n}x</td>
-                <td className="py-1.5 text-right tabular-nums text-muted-foreground">
-                  {formatRatioPct(row.ir_rate, 1)}
-                </td>
-                <td className="py-1.5 text-right tabular-nums text-muted-foreground">
-                  {formatRatioPct(Number(row.net_monthly), 3)}
-                </td>
-                <td className="py-1.5 text-right tabular-nums font-semibold text-foreground">
-                  {formatRatioPct(row.breakeven_discount, 2)}
-                </td>
-                <td className="py-1.5 text-right tabular-nums text-foreground">
-                  {mask(formatCurrency(parseMoney(row.gain_per_1000), currency, locale))}
-                </td>
+      <details>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+          <span className="font-medium text-foreground">Ver tabela completa ({rows.length} cenários)</span>
+          <span className="text-right text-muted-foreground">
+            Rendimento mensal: <strong className="font-medium text-foreground">{formatRatioPct(Number(yield_basis.monthly_gross), 3)}</strong>
+            {yield_basis.method === 'observed' ? ` · ${yield_basis.sample_size} obs.` : ' · premissa padrão'}
+          </span>
+        </summary>
+        <div className="mt-3 privacy-sensitive overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+                <th className="pb-2 font-medium">Parcelas</th>
+                <th className="pb-2 text-right font-medium">IR</th>
+                <th className="pb-2 text-right font-medium">Líquido/mês</th>
+                <th className="pb-2 text-right font-medium">Desconto de equilíbrio</th>
+                <th className="pb-2 text-right font-medium">Ganho por R$1000</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.n} className="border-t border-border/50">
+                  <td className="py-1.5 tabular-nums text-foreground">{row.n}x</td>
+                  <td className="py-1.5 text-right tabular-nums text-muted-foreground">{formatRatioPct(row.ir_rate, 1)}</td>
+                  <td className="py-1.5 text-right tabular-nums text-muted-foreground">{formatRatioPct(Number(row.net_monthly), 3)}</td>
+                  <td className="py-1.5 text-right font-semibold tabular-nums text-foreground">{formatRatioPct(row.breakeven_discount, 2)}</td>
+                  <td className="py-1.5 text-right tabular-nums text-foreground">{mask(formatCurrency(parseMoney(row.gain_per_1000), currency, locale))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   )
 }
