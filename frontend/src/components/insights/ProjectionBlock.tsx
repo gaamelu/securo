@@ -124,7 +124,7 @@ function ProjectionContent({
               return (
                 <g key={point.month} onMouseEnter={() => setSelectedIndex(index)} onClick={() => setSelectedIndex(index)} opacity={selected ? 1 : 0.9}>
                   <circle cx={xFor(index)} cy={balanceY(parseMoney(point.balance))} r={selected ? 5 : 3.5} fill={negative ? 'var(--destructive)' : point.kind === 'actual' ? 'var(--primary)' : 'var(--card)'} stroke={negative ? 'var(--destructive)' : 'var(--primary)'} strokeWidth={1.5} />
-                  <text x={xFor(index)} y={BALANCE_HEIGHT - 8} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>{point.month.slice(5)}</text>
+                  {!(point.kind === 'projected' && index > 0 && points[index - 1].month === point.month) && <text x={xFor(index)} y={BALANCE_HEIGHT - 8} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>{point.month.slice(5)}</text>}
                 </g>
               )
             })}
