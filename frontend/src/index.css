@@ -134,6 +134,28 @@
   }
 }
 
+@layer utilities {
+  /* Tailwind v4 did not emit this utility in the current content graph. */
+  .sr-only {
+    position: absolute;
+    display: block;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+}
+
+/* Keep semantic chart tables in accessibility tree without letting table
+   intrinsic sizing widen the page. */
+table.sr-only {
+  display: block;
+}
+
 /* Recharts focuses its wrapper/surface on click; on macOS this draws a
    browser focus ring around the whole chart. Suppress it — the chart conveys
    selection via bar opacity, not a focus outline. */
