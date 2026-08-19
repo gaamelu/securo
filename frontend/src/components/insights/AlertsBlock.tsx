@@ -80,7 +80,7 @@ function AlertsContent({ alerts, currency }: { alerts: AlertsData; currency: str
       {sorted.map((alert) => (
         <li
           key={alert.id}
-          className="flex items-start gap-3 rounded-lg border border-border px-3 py-2"
+          className="flex flex-wrap items-start gap-3 rounded-lg border border-border px-3 py-2"
         >
           <Badge variant={SEVERITY_BADGE[alert.severity]} className="mt-0.5 shrink-0">
             {SEVERITY_LABEL[alert.severity]}
@@ -95,7 +95,7 @@ function AlertsContent({ alerts, currency }: { alerts: AlertsData; currency: str
           </div>
 
           {alert.amount !== null && (
-            <span className="text-sm font-semibold tabular-nums text-foreground shrink-0 privacy-sensitive">
+            <span className="basis-full text-right text-sm font-semibold tabular-nums text-foreground shrink-0 privacy-sensitive sm:basis-auto">
               {mask(formatCurrency(parseMoney(alert.amount), displayCurrency, locale))}
             </span>
           )}
