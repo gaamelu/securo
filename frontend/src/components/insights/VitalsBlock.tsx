@@ -85,7 +85,7 @@ function VitalsContent({ cards, currency }: { cards: VitalsData; currency: strin
   const locale = useDisplayLocale()
 
   return (
-    <div className="flex flex-wrap gap-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {cards.map((card) => (
         <VitalCardView
           key={card.key}
@@ -113,7 +113,7 @@ function VitalCardView({
   const label = CARD_LABELS[card.key] ?? card.label
 
   return (
-    <div className="min-w-0 flex-1 min-w-[200px] rounded-lg border border-border p-3">
+    <div className="min-w-0 rounded-lg border border-border p-3">
       <p className="text-xs font-medium text-muted-foreground mb-1.5">{label}</p>
 
       {!card.available ? (

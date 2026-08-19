@@ -17,7 +17,7 @@ export default function PurchaseDecisionPage() {
   const mutation = useMutation({
     mutationFn: () => insights.purchaseDecision({
       price: Number(price).toFixed(2),
-      cash_discount_pct: Number(discount),
+      cash_discount_pct: Number(discount) / 100,
       installments: Number(installments),
     }),
   })

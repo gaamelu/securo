@@ -123,10 +123,10 @@ function NatureContent({
               {NATURE_LABELS[key]}
             </div>
           ))}
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          {series.some((month) => !month.trusted) && <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="h-2.5 w-2.5 shrink-0 rounded-sm border border-muted-foreground/60" style={{ backgroundImage: 'repeating-linear-gradient(135deg, transparent 0 2px, currentColor 2px 3px)' }} aria-hidden="true" />
             Fora da janela confiável
-          </div>
+          </div>}
         </div>
         <div className="inline-flex rounded-md border border-border bg-card p-0.5" role="group" aria-label="Métrica do gráfico">
           {(['amount', 'share'] as const).map((option) => (
