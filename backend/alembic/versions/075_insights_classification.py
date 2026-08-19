@@ -1,7 +1,7 @@
 """add insights classification columns to categories and transactions
 
-Revision ID: 071
-Revises: 070
+Revision ID: 075
+Revises: 074
 Create Date: 2026-08-18
 
 Three additive columns, none of them backfilled here:
@@ -33,8 +33,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "072"
-down_revision: Union[str, None] = "071"
+revision: str = "075"
+down_revision: Union[str, None] = "074"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

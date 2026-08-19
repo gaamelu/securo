@@ -628,6 +628,8 @@
     "minimumPayment": "Minimalna",
     "noChargesYet": "Brak obciążeń w tym cyklu",
     "currentTag": "teraz",
+    "previousMonths": "Poprzednie miesiące",
+    "nextMonths": "Następne miesiące",
     "overdueDays_one": "Przeterminowane o {{count}} dzień",
     "overdueDays_few": "Przeterminowane o {{count}} dni",
     "overdueDays_many": "Przeterminowane o {{count}} dni",
