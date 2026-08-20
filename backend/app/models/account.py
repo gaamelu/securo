@@ -42,6 +42,11 @@ class Account(Base):
     card_level: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Per-account cadence prevents one card's successful full snapshot from
+    # suppressing reconciliation for another card on the same connection.
+    last_bill_reconciliation_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     connection: Mapped[Optional["BankConnection"]] = relationship(back_populates="accounts")
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="account", cascade="all, delete-orphan")
